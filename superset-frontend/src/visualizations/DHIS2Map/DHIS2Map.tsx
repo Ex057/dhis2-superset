@@ -24,6 +24,7 @@ import {
   useMemo,
   useRef,
   ReactElement,
+  FC,
 } from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
 import { Spin } from 'antd';
@@ -36,6 +37,7 @@ import { DHIS2MapProps, BoundaryFeature, DrillState } from './types';
 import { DHIS2DataLoader } from './dhis2DataLoader';
 import {
   loadDHIS2GeoFeatures,
+  clearGeoFeatureCache,
   DHIS2GeoJSONFeature,
 } from 'src/utils/dhis2GeoFeatureLoader';
 import LegendPanel from './components/LegendPanel';
@@ -53,6 +55,24 @@ import {
   filterValidFeatures,
   darkenColor,
 } from './utils';
+
+// Helper function to get coordinate nesting depth
+function getCoordDepth(coords: any): number {
+  if (!Array.isArray(coords)) return 0;
+  if (coords.length === 0) return 1;
+  if (typeof coords[0] === 'number') return 1;
+  return 1 + getCoordDepth(coords[0]);
+}
+
+// Helper function to get a sample coordinate pair
+function getSampleCoord(coords: any): any {
+  if (!Array.isArray(coords)) return coords;
+  if (coords.length === 0) return null;
+  if (typeof coords[0] === 'number' && coords.length >= 2) {
+    return [coords[0], coords[1]]; // Return [lng, lat]
+  }
+  return getSampleCoord(coords[0]);
+}
 
 /* eslint-disable theme-colors/no-literal-colors */
 // Use hardcoded values for map styling to avoid theme context issues
@@ -133,7 +153,10 @@ interface MapAutoFocusProps {
   enabled: boolean;
 }
 
-function MapAutoFocus({ boundaries, enabled }: MapAutoFocusProps): ReactElement | null {
+function MapAutoFocus({
+  boundaries,
+  enabled,
+}: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
   const lastFocusedIdsRef = useRef<string>('');
@@ -235,7 +258,7 @@ function MapAutoFocus({ boundaries, enabled }: MapAutoFocusProps): ReactElement 
   }, [boundaryIdsKey, enabled, map]);
 
   return null;
-};
+}
 
 // Component for manual focus button
 interface FocusButtonProps {
@@ -276,6 +299,61 @@ function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
     </button>
   );
 }
+
+// Custom GeoJSON component that properly updates styles
+// react-leaflet v3 has issues with dynamic style updates, so we manually call setStyle
+interface DynamicGeoJSONProps {
+  data: any;
+  style: (feature: any) => any;
+  onEachFeature: (feature: any, layer: any) => void;
+  styleKey: string; // Used to detect when style function changes
+}
+
+const DynamicGeoJSON: FC<DynamicGeoJSONProps> = ({
+  data,
+  style,
+  onEachFeature,
+  styleKey,
+}) => {
+  const geoJsonRef = useRef<L.GeoJSON | null>(null);
+  const prevStyleKeyRef = useRef<string>(styleKey);
+
+  // Update styles when styleKey changes
+  useEffect(() => {
+    if (geoJsonRef.current && prevStyleKeyRef.current !== styleKey) {
+      // eslint-disable-next-line no-console
+      console.log('[DynamicGeoJSON] Updating layer styles due to styleKey change');
+      prevStyleKeyRef.current = styleKey;
+      
+      // Force style re-application
+      geoJsonRef.current.setStyle(style as any);
+      
+      // Also update tooltips and event handlers by re-creating them
+      geoJsonRef.current.eachLayer((layer: any) => {
+        const feature = layer.feature;
+        if (feature && onEachFeature) {
+          // Clear old event handlers
+          layer.off();
+          // Unbind old tooltip
+          if (layer.getTooltip()) {
+            layer.unbindTooltip();
+          }
+          // Re-apply onEachFeature
+          onEachFeature(feature, layer);
+        }
+      });
+    }
+  }, [styleKey, style, onEachFeature]);
+
+  return (
+    <GeoJSON
+      ref={geoJsonRef}
+      data={data}
+      style={style}
+      onEachFeature={onEachFeature}
+    />
+  );
+};
 
 function DHIS2Map({
   data,
@@ -408,7 +486,8 @@ function DHIS2Map({
   // This uses the same approach as DataPreview which successfully loads DHIS2 data
   useEffect(() => {
     // Auto-detect if this is a DHIS2 dataset by checking SQL for DHIS2 parameters
-    const hasDHIS2Params = datasetSql && /\/\*\s*DHIS2:\s*(.+?)\s*\*\//i.test(datasetSql);
+    const hasDHIS2Params =
+      datasetSql && /\/\*\s*DHIS2:\s*(.+?)\s*\*\//i.test(datasetSql);
     const shouldFetchDHIS2 = isDHIS2Dataset || hasDHIS2Params;
 
     // eslint-disable-next-line no-console
@@ -453,9 +532,20 @@ function DHIS2Map({
     setError(null);
 
     // eslint-disable-next-line no-console
-    console.log('[DHIS2Map] Fetching data with boundary level:', drillState.currentLevel, 'parent:', drillState.parentId);
+    console.log(
+      '[DHIS2Map] Fetching data with boundary level:',
+      drillState.currentLevel,
+      'parent:',
+      drillState.parentId,
+    );
 
-    DHIS2DataLoader.fetchChartData(databaseId, datasetSql, 10000, drillState.currentLevel, drillState.parentId)
+    DHIS2DataLoader.fetchChartData(
+      databaseId,
+      datasetSql,
+      10000,
+      drillState.currentLevel,
+      drillState.parentId,
+    )
       .then(result => {
         if (result && result.rows.length > 0) {
           // eslint-disable-next-line no-console
@@ -488,7 +578,7 @@ function DHIS2Map({
           isDHIS2Format: errorMessage.includes('DHIS2'),
           isParameterError: errorMessage.includes('parameters'),
         });
-        
+
         let displayError = `Failed to load DHIS2 data: ${errorMessage}`;
         if (errorMessage.includes('DHIS2 SQL format')) {
           displayError = `Invalid dataset SQL. Expected format: /* DHIS2: dx=id1;id2&pe=period&ou=ouId&ouMode=DESCENDANTS */`;
@@ -607,16 +697,25 @@ function DHIS2Map({
       `[DHIS2Map] Data structure - orgUnitColumn="${orgUnitColumn}", metric="${metric}", aggregation="${aggregationMethod}"`,
     );
     // eslint-disable-next-line no-console
-    console.log(`[DHIS2Map] Available columns (${availableColumns.length}):`, availableColumns);
+    console.log(
+      `[DHIS2Map] Available columns (${availableColumns.length}):`,
+      availableColumns,
+    );
     // eslint-disable-next-line no-console
     console.log(`[DHIS2Map] Total rows: ${filteredData.length}`);
     // eslint-disable-next-line no-console
     console.log(`[DHIS2Map] First row sample:`, firstRow);
     // eslint-disable-next-line no-console
-    console.log('[DHIS2Map] Column value types:', Object.entries(firstRow).reduce((acc, [k, v]) => {
-      acc[k] = typeof v;
-      return acc;
-    }, {} as Record<string, string>));
+    console.log(
+      '[DHIS2Map] Column value types:',
+      Object.entries(firstRow).reduce(
+        (acc, [k, v]) => {
+          acc[k] = typeof v;
+          return acc;
+        },
+        {} as Record<string, string>,
+      ),
+    );
 
     // Find the actual column name - handle sanitized names
     const findColumn = (targetCol: string): string | undefined => {
@@ -664,7 +763,7 @@ function DHIS2Map({
         'district',
         'level',
       ];
-      
+
       for (const pattern of orgUnitPatterns) {
         const found = availableColumns.find(col =>
           col.toLowerCase().includes(pattern),
@@ -695,13 +794,17 @@ function DHIS2Map({
     if (!actualMetricCol) {
       // Try alternative metric column names as fallback
       let fallbackMetricCol: string | undefined;
-      
+
       // If metric looks like an aggregation function, try extracting the inner part
-      const aggMatch = metric?.match(/^(SUM|AVG|COUNT|MIN|MAX)\s*\(\s*([^)]+)\s*\)$/i);
+      const aggMatch = metric?.match(
+        /^(SUM|AVG|COUNT|MIN|MAX)\s*\(\s*([^)]+)\s*\)$/i,
+      );
       if (aggMatch) {
         const innerCol = aggMatch[2];
         // eslint-disable-next-line no-console
-        console.log(`[DHIS2Map] Attempting to extract inner column from aggregation: "${innerCol}"`);
+        console.log(
+          `[DHIS2Map] Attempting to extract inner column from aggregation: "${innerCol}"`,
+        );
         fallbackMetricCol = findColumn(innerCol);
       }
 
@@ -732,7 +835,8 @@ function DHIS2Map({
       }
 
       // Use fallback columns
-      const finalOrgUnitCol = actualOrgUnitCol || 
+      const finalOrgUnitCol =
+        actualOrgUnitCol ||
         availableColumns.find(col => col.toLowerCase().includes('orgunit')) ||
         availableColumns[0];
       const finalMetricCol = fallbackMetricCol;
@@ -896,6 +1000,42 @@ function DHIS2Map({
     };
   }, [dataMap, legendType, legendMin, legendMax]);
 
+  // Debug: Track when boundaries state changes
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map] boundaries state updated:', {
+      count: boundaries.length,
+      names: boundaries.slice(0, 5).map(b => b.properties.name),
+      firstCoord: boundaries.length > 0 ? getSampleCoord(boundaries[0].geometry.coordinates) : null,
+    });
+  }, [boundaries]);
+
+  // SIMPLIFIED: Always show all loaded boundaries
+  // The getFeatureStyle function handles coloring based on data availability:
+  // - Boundaries with matching data get choropleth colors
+  // - Boundaries without data get the "no data" color (grey by default)
+  // This approach is more reliable than filtering boundaries by data match
+  const displayBoundaries = useMemo(() => {
+    if (boundaries.length === 0) {
+      return [];
+    }
+
+    // If showAllBoundaries is false and we have data, we could filter here
+    // But for most DHIS2 use cases, showing all boundaries is preferred
+    // Users can control visibility through the "Show All Boundaries" option
+    
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map] Display boundaries:', {
+      totalBoundaries: boundaries.length,
+      showAllBoundaries,
+      dataMapSize: dataMap.size,
+      boundaryNames: boundaries.slice(0, 5).map(b => b.properties.name),
+    });
+
+    // Always return all boundaries - styling handles data vs no-data coloring
+    return boundaries;
+  }, [boundaries, dataMap.size, showAllBoundaries]);
+
   // Determine which color scheme to use based on useLinearColorScheme setting
   const activeColorScheme = useMemo(() => {
     if (useLinearColorScheme) {
@@ -928,6 +1068,11 @@ function DHIS2Map({
   );
 
   const fetchBoundaries = useCallback(async () => {
+    // NOTE: We do NOT filter boundaries by org unit IDs from the SQL
+    // This matches the standalone DHIS2Map behavior - load ALL boundaries for the selected level
+    // The getFeatureStyle function handles coloring: regions with data get colors,
+    // regions without data get the "no data" color (grey)
+    
     // eslint-disable-next-line no-console
     console.log('[DHIS2Map] fetchBoundaries called with:', {
       databaseId,
@@ -955,9 +1100,15 @@ function DHIS2Map({
     setLoading(true);
     setError(null);
 
+    // IMPORTANT: Clear stale cache before fetching
+    // This ensures we get fresh data from the API
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map] Clearing geo feature cache before fetch...');
+    await clearGeoFeatureCache(databaseId, 'dhis2map_boundaries');
+
     // eslint-disable-next-line no-console
     console.log(
-      `[DHIS2Map] Fetching boundaries for levels: ${boundaryLevels.join(', ')} using loadDHIS2GeoFeatures`,
+      `[DHIS2Map] Fetching ALL boundaries for levels: ${boundaryLevels.join(', ')} (no parent filter - matching standalone behavior)`,
     );
 
     try {
@@ -967,16 +1118,24 @@ function DHIS2Map({
       // 3. Background refresh when cache is stale
       // 4. Both geoFeatures and geoJSON endpoints
       //
-      // IMPORTANT: We set forceRefresh to ensure we always load the exact levels
-      // requested by the user, not cached data from previous level selections
+      // IMPORTANT:
+      // - We do NOT pass parentOuIds for the initial load (load all boundaries
+      //   for the selected levels, standalone behavior).
+      // - The endpoint is chosen by transformProps/control panel via
+      //   boundaryLoadMethod, which defaults to 'geoJSON'. We do NOT override
+      //   it based on the number of levels anymore.
+      // - Caching is handled inside the loader; we avoid forceRefresh here so
+      //   we can benefit from valid cached geometry.
+      const endpointToUse = boundaryLoadMethod || 'geoJSON';
+
       const result = await loadDHIS2GeoFeatures({
         databaseId,
         levels: boundaryLevels,
-        endpoint: boundaryLoadMethod, // User can select geoFeatures or geoJSON
+        endpoint: endpointToUse,
         cacheKeyPrefix: 'dhis2map_boundaries',
         cacheDuration: 24 * 60 * 60 * 1000, // 24 hours persistent cache
-        enableBackgroundRefresh: false, // Disable background refresh since we force refresh
-        forceRefresh: true, // Always fetch fresh data to ensure correct levels
+        enableBackgroundRefresh: true,
+        forceRefresh: false,
       });
 
       // eslint-disable-next-line no-console
@@ -985,6 +1144,10 @@ function DHIS2Map({
         fromCache: result.fromCache,
         backgroundRefreshInProgress: result.backgroundRefreshInProgress,
         loadTimeMs: result.loadTimeMs,
+        featureIds: result.allFeatures.map(f => f.id).slice(0, 10),
+        featureNames: result.allFeatures
+          .map(f => f.properties.name)
+          .slice(0, 10),
         levelCounts: Array.from(result.featuresByLevel.entries()).map(
           ([level, features]) => `L${level}: ${features.length}`,
         ),
@@ -1031,6 +1194,45 @@ function DHIS2Map({
         `[DHIS2Map] Converted ${result.totalCount} features to ${validFeatures.length} valid BoundaryFeatures`,
       );
 
+      // Debug: Log coordinate structure of first boundary
+      if (validFeatures.length > 0) {
+        const firstFeature = validFeatures[0];
+        const coords = firstFeature.geometry.coordinates;
+        const sampleCoordinate = getSampleCoord(coords);
+        // eslint-disable-next-line no-console
+        console.log('[DHIS2Map] First boundary coordinate debug:', {
+          name: firstFeature.properties.name,
+          geometryType: firstFeature.geometry.type,
+          coordsIsArray: Array.isArray(coords),
+          coordsLength: Array.isArray(coords) ? coords.length : 'N/A',
+          firstCoordIsArray: Array.isArray(coords) && Array.isArray(coords[0]),
+          coordStructure: Array.isArray(coords) 
+            ? `depth=${getCoordDepth(coords)}, outerLen=${coords.length}` 
+            : 'not array',
+          sampleCoord: sampleCoordinate,
+        });
+        
+        // Check if coordinate is in Uganda's bounding box (29.5-35 E, -1.5-4.2 N)
+        if (Array.isArray(sampleCoordinate) && sampleCoordinate.length >= 2) {
+          const [lng, lat] = sampleCoordinate;
+          const inUganda = lng >= 29.5 && lng <= 35 && lat >= -1.5 && lat <= 4.2;
+          // eslint-disable-next-line no-console
+          console.log('[DHIS2Map] Coordinate location check:', {
+            lng,
+            lat,
+            inUganda,
+            ugandaBounds: { lng: '29.5-35', lat: '-1.5 to 4.2' },
+          });
+        }
+        
+        // Log all feature names and their first coordinate for complete picture
+        // eslint-disable-next-line no-console
+        console.log('[DHIS2Map] All boundaries summary:', validFeatures.map(f => ({
+          name: f.properties.name,
+          firstCoord: getSampleCoord(f.geometry.coordinates),
+        })));
+      }
+
       // Debug: Log level distribution of loaded boundaries
       const levelCounts: Record<number, number> = {};
       validFeatures.forEach(f => {
@@ -1059,16 +1261,17 @@ function DHIS2Map({
             'Request timed out - the DHIS2 server may be slow. Try refreshing.',
           ),
         );
-      } else if (message.includes('401') || message.includes('authentication')) {
+      } else if (
+        message.includes('401') ||
+        message.includes('authentication')
+      ) {
         setError(t('Authentication failed - check DHIS2 credentials'));
       } else if (message.includes('404')) {
         setError(t('Database not found'));
       } else if (message.includes('500')) {
         setError(t('Server error while fetching boundaries'));
       } else {
-        setError(
-          t('Failed to load map boundaries: ') + message,
-        );
+        setError(t('Failed to load map boundaries: ') + message);
       }
     } finally {
       setLoading(false);
@@ -1084,11 +1287,14 @@ function DHIS2Map({
   // Fetch boundaries when levels change
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log(`[DHIS2Map] Boundary levels changed to: ${boundaryLevelsKey}`, {
-      levels: boundaryLevels,
-      databaseId,
-      hasFetchBoundaries: !!fetchBoundaries,
-    });
+    console.log(
+      `[DHIS2Map] Boundary config changed - levels: ${boundaryLevelsKey}`,
+      {
+        levels: boundaryLevels,
+        databaseId,
+        hasFetchBoundaries: !!fetchBoundaries,
+      },
+    );
     // Only call fetchBoundaries if we have valid level and database info
     if (databaseId && boundaryLevels && boundaryLevels.length > 0) {
       // Reset loading state and fetch new boundaries
@@ -1098,12 +1304,20 @@ function DHIS2Map({
       // Log why we're not fetching boundaries
       // eslint-disable-next-line no-console
       console.warn('[DHIS2Map] Skipping boundary fetch:', {
-        reason: !databaseId ? 'No database ID' : !boundaryLevels?.length ? 'No boundary levels' : 'Unknown',
+        reason: !databaseId
+          ? 'No database ID'
+          : !boundaryLevels?.length
+            ? 'No boundary levels'
+            : 'Unknown',
         databaseId,
         boundaryLevels,
       });
       if (!databaseId) {
-        setError(t('Database connection not found. Please ensure your dataset is linked to a DHIS2 database.'));
+        setError(
+          t(
+            'Database connection not found. Please ensure your dataset is linked to a DHIS2 database.',
+          ),
+        );
         setLoading(false);
       }
     }
@@ -1162,7 +1376,10 @@ function DHIS2Map({
       );
       if (unmatchedBoundaries.length > 0) {
         // eslint-disable-next-line no-console
-        console.log('[DHIS2Map] Sample unmatched boundaries:', unmatchedBoundaries);
+        console.log(
+          '[DHIS2Map] Sample unmatched boundaries:',
+          unmatchedBoundaries,
+        );
       }
 
       // If most boundaries have no data, provide detailed diagnostic info
@@ -1310,7 +1527,7 @@ function DHIS2Map({
         for (const [key, val] of dataMap.entries()) {
           const keyLower = String(key).toLowerCase();
           const nameLower = featureName.toLowerCase();
-          
+
           // Check if key contains name or name contains key (for partial matches)
           if (
             keyLower === nameLower ||
@@ -1337,10 +1554,11 @@ function DHIS2Map({
       let fillOpacityValue = opacity;
 
       if (value !== undefined) {
+        // Areas with data: use color scale
         fillColor = colorScale(value);
-      } else if (showAllBoundaries) {
-        // Show boundary outline even without data
-        fillOpacityValue = 0.1; // Very light fill for areas without data
+      } else {
+        // Areas without data: make clearly visible, not almost transparent
+        fillOpacityValue = Math.max(opacity * 0.6, 0.3);
       }
 
       const isHovered = hoveredFeature === feature.id;
@@ -1351,42 +1569,36 @@ function DHIS2Map({
 
       // Auto-theme borders: derive border color from fill color (darker shade)
       if (autoThemeBorders && value !== undefined) {
-        borderColor = darkenColor(fillColor, 0.4); // 40% darker than fill
+        borderColor = darkenColor(fillColor, 0.4);
       } else if (levelBorderColors && levelBorderColors.length > 0) {
-        // Get feature level - ensure it's a number
-        const featureLevel = feature.properties.level;
-        const levelConfig = levelBorderColors.find(
-          lc => lc.level === featureLevel,
-        );
-
-        if (levelConfig) {
-          borderColor = `rgba(${levelConfig.color.r},${levelConfig.color.g},${levelConfig.color.b},${levelConfig.color.a})`;
-          if (levelConfig.width !== undefined) {
-            borderWidth = levelConfig.width;
-          }
+        const level = feature.properties.level || 1;
+        const levelColor = levelBorderColors.find(l => l.level === level);
+        if (levelColor) {
+          borderColor = `rgba(${levelColor.color.r},${levelColor.color.g},${levelColor.color.b},${levelColor.color.a})`;
         }
       }
 
+      if (isHovered) {
+        borderWidth = strokeWidth + 1;
+      }
+
       return {
+        color: borderColor,
+        weight: borderWidth,
         fillColor,
-        fillOpacity: isHovered
-          ? Math.min(fillOpacityValue + 0.2, 1)
-          : fillOpacityValue,
-        color: isHovered ? '#000000' : borderColor,
-        weight: isHovered ? borderWidth + 1 : borderWidth,
+        fillOpacity: fillOpacityValue,
       };
     },
     [
       getFeatureValue,
-      colorScale,
+      legendNoDataColor,
       opacity,
+      hoveredFeature,
       strokeColor,
       strokeWidth,
       autoThemeBorders,
-      hoveredFeature,
-      legendNoDataColor,
       levelBorderColors,
-      showAllBoundaries,
+      colorScale,
     ],
   );
 
@@ -1498,18 +1710,42 @@ function DHIS2Map({
 
         {/* Auto-focus map when boundaries load */}
         {/* @ts-ignore - React 19 compatibility */}
-        <MapAutoFocus boundaries={boundaries} enabled={!loading} />
+        <MapAutoFocus boundaries={displayBoundaries} enabled={!loading} />
 
         {/* Manual focus button */}
-        {boundaries.length > 0 && <FocusButton boundaries={boundaries} />}
+        {displayBoundaries.length > 0 && (
+          <FocusButton boundaries={displayBoundaries} />
+        )}
 
-        {boundaries.length > 0 && (
+        {displayBoundaries.length > 0 && (
+          // Debug: Log what's being passed to GeoJSON
+          (() => {
+            // eslint-disable-next-line no-console
+            console.log('[DHIS2Map] GeoJSON render - displayBoundaries:', {
+              count: displayBoundaries.length,
+              firstBoundary: displayBoundaries[0] ? {
+                id: displayBoundaries[0].id,
+                name: displayBoundaries[0].properties.name,
+                geometryType: displayBoundaries[0].geometry.type,
+                firstCoord: getSampleCoord(displayBoundaries[0].geometry.coordinates),
+              } : null,
+              allCoords: displayBoundaries.slice(0, 5).map(b => ({
+                name: b.properties.name,
+                coord: getSampleCoord(b.geometry.coordinates),
+              })),
+            });
+            return null;
+          })()
+        )}
+        {displayBoundaries.length > 0 && (
           /* @ts-ignore - React 19 compatibility */
-          <GeoJSON
-            key={`levels-${boundaryLevelsKey}-drill-${drillState.currentLevel}-${drillState.parentId}-colors-${JSON.stringify(levelBorderColors?.map(lc => lc.color))}`}
-            data={{ type: 'FeatureCollection', features: boundaries } as any}
+          <DynamicGeoJSON
+            data={
+              { type: 'FeatureCollection', features: displayBoundaries } as any
+            }
             style={getFeatureStyle as any}
             onEachFeature={onEachFeature as any}
+            styleKey={`levels-${boundaryLevelsKey}-drill-${drillState.currentLevel}-${drillState.parentId}-colors-${JSON.stringify(levelBorderColors?.map(lc => lc.color))}-boundaries-${displayBoundaries.map(b => b.id).sort().join(',')}`}
           />
         )}
       </MapContainer>

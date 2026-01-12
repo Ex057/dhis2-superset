@@ -70,6 +70,10 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     boundary_levels: (formData as any)?.boundary_levels,
     boundary_level: (formData as any)?.boundary_level,
     all_keys: Object.keys(formData || {}),
+    // Check for any boundary-related keys
+    boundary_keys: Object.keys(formData || {}).filter(k => k.toLowerCase().includes('boundary') || k.toLowerCase().includes('level')),
+    // Show raw formData for boundary fields
+    raw_boundary_levels: JSON.stringify((formData as any)?.boundary_levels),
   });
 
   const {
@@ -123,7 +127,8 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
 
   // Fallback: Try to get from formData
   if (!databaseId && formData) {
-    databaseId = (formData as any)?.database_id || (formData as any)?.database?.id;
+    databaseId =
+      (formData as any)?.database_id || (formData as any)?.database?.id;
   }
 
   // eslint-disable-next-line no-console
@@ -182,14 +187,20 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
   if (org_unit_column && allColumns.includes(org_unit_column)) {
     hierarchyLevelColumn = org_unit_column;
     // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using explicitly set org_unit_column:', org_unit_column);
+    console.log(
+      '[DHIS2Map transformProps] Using explicitly set org_unit_column:',
+      org_unit_column,
+    );
   } else if (
     sanitizedOrgUnitColumn &&
     allColumns.includes(sanitizedOrgUnitColumn)
   ) {
     hierarchyLevelColumn = sanitizedOrgUnitColumn;
     // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using sanitized org_unit_column:', sanitizedOrgUnitColumn);
+    console.log(
+      '[DHIS2Map transformProps] Using sanitized org_unit_column:',
+      sanitizedOrgUnitColumn,
+    );
   }
 
   // Priority 2: Look for known hierarchy column patterns
@@ -229,12 +240,15 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
       const levelIndex = Math.min(selectedLevel - 1, levelColumns.length - 1);
       hierarchyLevelColumn = levelColumns[Math.max(0, levelIndex)];
       // eslint-disable-next-line no-console
-      console.log('[DHIS2Map transformProps] Using pattern-matched hierarchy column:', {
-        hierarchyLevelColumn,
-        selectedLevel,
-        levelIndex,
-        allPatternMatches: levelColumns,
-      });
+      console.log(
+        '[DHIS2Map transformProps] Using pattern-matched hierarchy column:',
+        {
+          hierarchyLevelColumn,
+          selectedLevel,
+          levelIndex,
+          allPatternMatches: levelColumns,
+        },
+      );
     }
   }
 
@@ -258,7 +272,10 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
       if (typeof firstRow[col] === 'string') {
         hierarchyLevelColumn = col;
         // eslint-disable-next-line no-console
-        console.log('[DHIS2Map transformProps] Using first string column as org unit:', col);
+        console.log(
+          '[DHIS2Map transformProps] Using first string column as org unit:',
+          col,
+        );
         break;
       }
     }
@@ -273,7 +290,10 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
       if (typeof firstRow[col] === 'string') {
         hierarchyLevelColumn = col;
         // eslint-disable-next-line no-console
-        console.log('[DHIS2Map transformProps] Using DHIS2 fallback org unit column:', col);
+        console.log(
+          '[DHIS2Map transformProps] Using DHIS2 fallback org unit column:',
+          col,
+        );
         break;
       }
     }
@@ -318,41 +338,92 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
 
   // Convert boundary_levels to array, supporting backward compatibility with boundary_level
   // IMPORTANT: Check Array.isArray first because empty arrays are falsy in JS
-  let selectedLevels: number[];
+  
+  // Also check for camelCase variants (sometimes Superset passes these)
+  const rawBoundaryLevels = boundary_levels ?? (formData as any)?.boundaryLevels;
+  const rawBoundaryLevel = boundary_level ?? (formData as any)?.boundaryLevel;
+  
+  // Normalize boundary levels - handle various input formats
+  // SelectControl can return: number[], string[], number, string, or undefined
+  const normalizeLevels = (
+    levels: number | string | (number | string)[] | undefined,
+  ): number[] => {
+    if (!levels) return [];
+    if (Array.isArray(levels)) {
+      return levels
+        .map(l => (typeof l === 'string' ? parseInt(String(l), 10) : l))
+        .filter(l => !Number.isNaN(l) && l > 0);
+    }
+    const parsed = typeof levels === 'string' ? parseInt(levels, 10) : levels;
+    return !Number.isNaN(parsed) && parsed > 0 ? [parsed] : [];
+  };
+
+  // Try boundary_levels first, then boundary_level for backward compatibility
+  let selectedLevels = normalizeLevels(rawBoundaryLevels);
+  let levelSource = 'boundary_levels';
+
+  if (selectedLevels.length === 0) {
+    selectedLevels = normalizeLevels(rawBoundaryLevel);
+    levelSource = 'boundary_level';
+  }
 
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map transformProps] Boundary level inputs:', {
     boundary_levels,
+    rawBoundaryLevels,
     boundary_levels_type: typeof boundary_levels,
     boundary_levels_isArray: Array.isArray(boundary_levels),
     boundary_level,
+    rawBoundaryLevel,
     boundary_level_type: typeof boundary_level,
     boundary_level_isArray: Array.isArray(boundary_level),
+    normalizedLevels: selectedLevels,
+    levelSource,
   });
 
-  if (Array.isArray(boundary_levels) && boundary_levels.length > 0) {
-    selectedLevels = boundary_levels.map(Number); // Ensure numbers
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using boundary_levels (array):', selectedLevels);
-  } else if (boundary_levels && !Array.isArray(boundary_levels)) {
-    // Single value passed as non-array
-    selectedLevels = [Number(boundary_levels)];
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using boundary_levels (single):', selectedLevels);
-  } else if (Array.isArray(boundary_level) && boundary_level.length > 0) {
-    // Backward compatibility with old boundary_level prop
-    selectedLevels = boundary_level.map(Number);
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using boundary_level (array):', selectedLevels);
-  } else if (boundary_level && !Array.isArray(boundary_level)) {
-    selectedLevels = [Number(boundary_level)];
-    // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using boundary_level (single):', selectedLevels);
-  } else {
-    // Default to Level 2 if nothing is specified (fallback for legacy charts)
+  // AUTO-DETECT boundary level from org unit column name if no level explicitly set
+  // This helps when users don't explicitly set the boundary level
+  if (selectedLevels.length === 0 && hierarchyLevelColumn) {
+    const colLower = hierarchyLevelColumn.toLowerCase();
+    let detectedLevel: number | null = null;
+    
+    // Standard Uganda DHIS2 hierarchy mapping
+    // Level 1: National (Country)
+    // Level 2: Region  
+    // Level 3: District
+    // Level 4: Sub-county
+    // Level 5: Parish/Facility
+    if (colLower.includes('national') || colLower.includes('country')) {
+      detectedLevel = 1;
+    } else if (colLower.includes('region') || colLower.includes('province')) {
+      detectedLevel = 2;
+    } else if (colLower.includes('district') && !colLower.includes('sub')) {
+      detectedLevel = 3;
+    } else if (colLower.includes('subcounty') || colLower.includes('sub_county') || colLower.includes('sub-county')) {
+      detectedLevel = 4;
+    } else if (colLower.includes('parish') || colLower.includes('facility') || colLower.includes('village')) {
+      detectedLevel = 5;
+    }
+    
+    if (detectedLevel) {
+      selectedLevels = [detectedLevel];
+      levelSource = `auto-detected from column "${hierarchyLevelColumn}"`;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[DHIS2Map transformProps] Auto-detected boundary level ${detectedLevel} from column "${hierarchyLevelColumn}"`,
+      );
+    }
+  }
+  
+  // Final fallback: Default to Level 2 if nothing is specified
+  if (selectedLevels.length === 0) {
     selectedLevels = [2];
+    levelSource = 'DEFAULT (no level specified)';
     // eslint-disable-next-line no-console
-    console.log('[DHIS2Map transformProps] Using DEFAULT (Level 2):', selectedLevels);
+    console.log(
+      '[DHIS2Map transformProps] Using DEFAULT (Level 2):',
+      selectedLevels,
+    );
   }
 
   // Build custom colors map from individual level color controls
@@ -493,7 +564,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     // DHIS2 specific props for fallback data fetching
     datasetSql,
     isDHIS2Dataset,
-    // Boundary loading method
-    boundaryLoadMethod: formData.boundary_load_method || 'geoFeatures',
+    // Boundary loading method - default to geoJSON for better multi-level support
+    boundaryLoadMethod: formData.boundary_load_method || 'geoJSON',
   };
 }

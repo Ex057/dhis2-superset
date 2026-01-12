@@ -251,6 +251,70 @@ async function deleteFromIndexedDB(cacheKey: string): Promise<void> {
 }
 
 /**
+ * Detect coordinate nesting depth to determine geometry type
+ * Point: [lng, lat] - depth 1
+ * Polygon: [[[lng, lat], ...]] - depth 3  
+ * MultiPolygon: [[[[lng, lat], ...]]] - depth 4
+ */
+function detectCoordinateDepth(coords: any): number {
+  if (!Array.isArray(coords)) return 0;
+  if (coords.length === 0) return 1;
+  if (typeof coords[0] === 'number') return 1;
+  return 1 + detectCoordinateDepth(coords[0]);
+}
+
+/**
+ * Normalize coordinates to proper GeoJSON structure
+ * DHIS2 sometimes stores Polygons with wrong nesting level
+ */
+function normalizeCoordinates(
+  coords: any,
+  targetType: 'Point' | 'Polygon' | 'MultiPolygon',
+): any {
+  const depth = detectCoordinateDepth(coords);
+  
+  // eslint-disable-next-line no-console
+  console.debug(`[GeoFeatureLoader] normalizeCoordinates: depth=${depth}, targetType=${targetType}`);
+  
+  if (targetType === 'Point') {
+    // Point should be [lng, lat]
+    if (depth === 1) return coords;
+    // If nested, extract the first coordinate
+    let c = coords;
+    while (Array.isArray(c) && Array.isArray(c[0])) {
+      c = c[0];
+    }
+    return c;
+  }
+  
+  if (targetType === 'Polygon') {
+    // Polygon should be [[[lng, lat], ...]] - depth 3
+    if (depth === 3) return coords;
+    if (depth === 4) {
+      // It's actually a MultiPolygon with one polygon, extract it
+      return coords[0];
+    }
+    if (depth === 2) {
+      // Missing outer ring array, wrap it
+      return [coords];
+    }
+    return coords;
+  }
+  
+  if (targetType === 'MultiPolygon') {
+    // MultiPolygon should be [[[[lng, lat], ...]]] - depth 4
+    if (depth === 4) return coords;
+    if (depth === 3) {
+      // It's actually a Polygon, wrap it to make MultiPolygon
+      return [coords];
+    }
+    return coords;
+  }
+  
+  return coords;
+}
+
+/**
  * Convert DHIS2 geoFeature format to GeoJSON Feature format
  */
 function convertGeoFeatureToGeoJSON(
@@ -269,8 +333,16 @@ function convertGeoFeatureToGeoJSON(
       return null;
     }
 
-    // Determine geometry type based on ty field
+    // Detect actual coordinate depth
+    const depth = detectCoordinateDepth(coordinates);
+    
+    // eslint-disable-next-line no-console
+    console.debug(`[GeoFeatureLoader] Feature "${geoFeature.na}": ty=${geoFeature.ty}, coord_depth=${depth}`);
+
+    // Determine geometry type based on ty field AND coordinate structure
     let geometryType: 'Point' | 'Polygon' | 'MultiPolygon';
+    
+    // First, use the ty field from DHIS2
     switch (geoFeature.ty) {
       case 1:
         geometryType = 'Point';
@@ -282,30 +354,39 @@ function convertGeoFeatureToGeoJSON(
         geometryType = 'MultiPolygon';
         break;
       default:
-        if (
-          Array.isArray(coordinates) &&
-          coordinates.length === 2 &&
-          typeof coordinates[0] === 'number'
-        ) {
+        // Auto-detect based on coordinate depth
+        if (depth === 1) {
           geometryType = 'Point';
-        } else if (
-          Array.isArray(coordinates) &&
-          Array.isArray(coordinates[0]) &&
-          Array.isArray(coordinates[0][0]) &&
-          Array.isArray(coordinates[0][0][0])
-        ) {
+        } else if (depth === 4) {
           geometryType = 'MultiPolygon';
         } else {
           geometryType = 'Polygon';
         }
     }
+    
+    // Validate and correct based on actual coordinate depth
+    // This handles DHIS2 instances that mislabel geometry types
+    if (geometryType === 'Polygon' && depth === 4) {
+      // Declared as Polygon but has MultiPolygon structure
+      geometryType = 'MultiPolygon';
+      // eslint-disable-next-line no-console
+      console.debug(`[GeoFeatureLoader] Correcting "${geoFeature.na}": Polygon → MultiPolygon (depth=4)`);
+    } else if (geometryType === 'MultiPolygon' && depth === 3) {
+      // Declared as MultiPolygon but has Polygon structure
+      geometryType = 'Polygon';
+      // eslint-disable-next-line no-console
+      console.debug(`[GeoFeatureLoader] Correcting "${geoFeature.na}": MultiPolygon → Polygon (depth=3)`);
+    }
+    
+    // Normalize coordinates to match the detected type
+    const normalizedCoords = normalizeCoordinates(coordinates, geometryType);
 
     return {
       type: 'Feature',
       id: geoFeature.id,
       geometry: {
         type: geometryType,
-        coordinates,
+        coordinates: normalizedCoords,
       },
       properties: {
         id: geoFeature.id,
@@ -369,11 +450,56 @@ async function loadViaGeoFeaturesEndpoint(
 
     const geoFeatures: DHIS2GeoFeature[] = response.json?.result || [];
 
+    // Log raw feature data for debugging coordinate issues
+    if (geoFeatures.length > 0) {
+      // Parse first coordinate to verify geographic location
+      let firstCoordParsed = null;
+      try {
+        const coordsArray = JSON.parse(geoFeatures[0].co || '[]');
+        // Navigate to the first actual [lng, lat] pair
+        let coords = coordsArray;
+        while (Array.isArray(coords) && coords.length > 0 && Array.isArray(coords[0])) {
+          coords = coords[0];
+        }
+        if (Array.isArray(coords) && coords.length >= 2) {
+          firstCoordParsed = { lng: coords[0], lat: coords[1] };
+        }
+      } catch {
+        firstCoordParsed = 'parse error';
+      }
+
+      // eslint-disable-next-line no-console
+      console.log('[GeoFeatureLoader] Raw geoFeatures sample:', {
+        firstFeature: {
+          id: geoFeatures[0].id,
+          name: geoFeatures[0].na,
+          type: geoFeatures[0].ty,
+          coordsPreview: geoFeatures[0].co?.substring(0, 200) + '...',
+          firstCoordParsed,
+        },
+        allFeatureNames: geoFeatures.map(gf => gf.na),
+      });
+    }
+
     for (const gf of geoFeatures) {
       const feature = convertGeoFeatureToGeoJSON(gf);
       if (feature) {
         allFeatures.push(feature);
       }
+    }
+    
+    // Log converted features
+    if (allFeatures.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log('[GeoFeatureLoader] Converted features:', {
+        count: allFeatures.length,
+        sample: {
+          id: allFeatures[0].id,
+          name: allFeatures[0].properties.name,
+          geometryType: allFeatures[0].geometry.type,
+          coordDepth: detectCoordinateDepth(allFeatures[0].geometry.coordinates),
+        },
+      });
     }
   } catch (error) {
     // eslint-disable-next-line no-console

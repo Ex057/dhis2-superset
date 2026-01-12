@@ -2738,7 +2738,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 params=params,
                 auth=auth,
                 headers=headers,
-                timeout=120,  # Longer timeout for geo data
+                timeout=300,  # 5 minutes timeout for large geo data
             )
 
             logger.info(f"[DHIS2 GeoFeatures] Response status: {response.status_code}")
@@ -2748,6 +2748,34 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 # geoFeatures returns an array directly
                 features = data if isinstance(data, list) else data.get("geoFeatures", [])
                 logger.info(f"[DHIS2 GeoFeatures] Found {len(features)} features")
+                
+                # Debug: Log coordinate structure of first feature
+                if features and len(features) > 0:
+                    first_feature = features[0]
+                    logger.info(f"[DHIS2 GeoFeatures] First feature sample: id={first_feature.get('id')}, name={first_feature.get('na')}, type={first_feature.get('ty')}")
+                    coords_str = first_feature.get('co', '')
+                    if coords_str:
+                        import json as json_module
+                        try:
+                            coords = json_module.loads(coords_str) if isinstance(coords_str, str) else coords_str
+                            # Detect nesting depth
+                            def get_depth(c, d=0):
+                                if not isinstance(c, list) or len(c) == 0:
+                                    return d
+                                if isinstance(c[0], (int, float)):
+                                    return d + 1
+                                return get_depth(c[0], d + 1)
+                            depth = get_depth(coords)
+                            logger.info(f"[DHIS2 GeoFeatures] Coordinate depth: {depth}, outer_length: {len(coords) if isinstance(coords, list) else 'N/A'}")
+                            # Log first coordinate for reference
+                            sample = coords
+                            for _ in range(min(depth - 1, 4)):
+                                if isinstance(sample, list) and len(sample) > 0:
+                                    sample = sample[0]
+                            logger.info(f"[DHIS2 GeoFeatures] Sample coordinate: {sample[:2] if isinstance(sample, list) else sample}")
+                        except Exception as e:
+                            logger.warning(f"[DHIS2 GeoFeatures] Failed to parse coords for logging: {e}")
+                
                 return self.response(200, result=features)
             elif response.status_code == 401:
                 error_msg = f"DHIS2 API authentication failed. Status: {response.status_code}"
@@ -2826,7 +2854,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
                 params=params,
                 auth=auth,
                 headers=headers,
-                timeout=120,  # Longer timeout for geo data
+                timeout=300,  # 5 minutes timeout for large geo data
             )
 
             logger.info(f"[DHIS2 GeoJSON] Response status: {response.status_code}")

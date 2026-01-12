@@ -147,14 +147,17 @@ export default function buildQuery(formData: QueryFormData) {
     });
 
     // For DHIS2 datasets, request raw data with proper column names
-    // Use groupby/columns instead of metrics for dimension-based queries
+    // Use groupby/columns for dimension-based queries
+    // IMPORTANT: Don't add metric to both groupby AND metrics - this causes
+    // "Duplicate column/metric labels" error in query validation
     return [
       {
         ...baseQueryObject,
-        // Request all needed columns as groupby dimensions
+        // Request all needed columns as groupby dimensions (includes metric)
         groupby: columns,
-        // Include metric column in the query
-        metrics: sanitizedMetric ? [sanitizedMetric] : [],
+        // Don't duplicate metric in metrics array - it's already in groupby
+        // Setting metrics to empty array for raw data retrieval
+        metrics: [],
         // Use a reasonable row limit (0 means unlimited which can cause issues)
         row_limit: baseQueryObject.row_limit || 10000,
         // Disable time range filtering if not needed for DHIS2

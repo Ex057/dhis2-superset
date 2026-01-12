@@ -115,6 +115,27 @@ class DHIS2ParametersSchema(Schema):
         }
     )
 
+    # Hide standard database fields that don't apply to DHIS2
+    port = fields.Int(
+        required=False,
+        allow_none=True,
+        load_default=None,
+        metadata={
+            "description": __("Port number"),
+            "x-hidden": True  # DHIS2 uses HTTPS (443), not configurable
+        }
+    )
+
+    database = fields.Str(
+        required=False,
+        allow_none=True,
+        load_default=None,
+        metadata={
+            "description": __("Database name"),
+            "x-hidden": True  # DHIS2 doesn't have database names
+        }
+    )
+
     # Dynamic default parameters - applies to ALL endpoints
     default_params = fields.Dict(
         keys=fields.Str(),

@@ -496,6 +496,7 @@ const config = {
       {
         test: /\.css$/,
         include: [APP_DIR, /superset-ui.+\/src/],
+        exclude: /node_modules/,
         use: [
           isDevMode
             ? 'style-loader'
@@ -509,6 +510,27 @@ const config = {
             loader: 'css-loader',
             options: {
               sourceMap: true,
+            },
+          },
+        ],
+      },
+      /* for CSS from node_modules (leaflet, geostyler, fontsource, etc.) */
+      {
+        test: /\.css$/,
+        include: /node_modules/,
+        use: [
+          isDevMode
+            ? 'style-loader'
+            : {
+                loader: MiniCssExtractPlugin.loader,
+                options: {
+                  publicPath: MINI_CSS_EXTRACT_PUBLICPATH,
+                },
+              },
+          {
+            loader: 'css-loader',
+            options: {
+              sourceMap: false,
             },
           },
         ],

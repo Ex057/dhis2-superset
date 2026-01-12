@@ -194,13 +194,13 @@ const config: ControlPanelConfig = {
               label: t('Boundary Load Method'),
               description: t(
                 'Method to load geographic boundaries from DHIS2. ' +
-                  'geoFeatures: Uses the analytics geoFeatures API (recommended). ' +
-                  'geoJSON: Uses the organisationUnits.geojson endpoint.',
+                  'GeoJSON: Uses the organisationUnits.geojson endpoint (recommended for multiple levels). ' +
+                  'geoFeatures: Uses the analytics geoFeatures API.',
               ),
-              default: 'geoFeatures',
+              default: 'geoJSON',
               choices: [
-                ['geoFeatures', t('geoFeatures (recommended)')],
-                ['geoJSON', t('GeoJSON')],
+                ['geoJSON', t('GeoJSON (recommended)')],
+                ['geoFeatures', t('geoFeatures')],
               ],
               renderTrigger: true,
             },
@@ -437,9 +437,9 @@ const config: ControlPanelConfig = {
               type: 'CheckboxControl',
               label: t('Show All Boundaries'),
               description: t(
-                'Display boundary outlines for all areas, even those without data',
+                'Display all boundary outlines, including areas without data. When unchecked, only boundaries that match your data will be shown (recommended for multi-country DHIS2 instances).',
               ),
-              default: true,
+              default: false,
               renderTrigger: true,
             },
           },

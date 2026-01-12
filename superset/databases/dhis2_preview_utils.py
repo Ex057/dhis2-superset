@@ -21,8 +21,41 @@ import logging
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
+
+# Create a session with connection pooling and retry logic for DHIS2 API calls
+# This significantly improves performance and reliability for multiple API calls
+_dhis2_session: requests.Session | None = None
+
+
+def get_dhis2_session() -> requests.Session:
+    """Get or create a requests session with connection pooling and retry logic."""
+    global _dhis2_session
+    if _dhis2_session is None:
+        _dhis2_session = requests.Session()
+        
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        
+        # Configure connection pooling
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=10,
+        )
+        
+        _dhis2_session.mount("http://", adapter)
+        _dhis2_session.mount("https://", adapter)
+        
+    return _dhis2_session
 
 
 def fetch_org_unit_level_names(
@@ -36,11 +69,12 @@ def fetch_org_unit_level_names(
     Example: {1: "National", 2: "Region", 3: "District", ...}
     """
     level_names: dict[int, str] = {}
+    session = get_dhis2_session()
 
     try:
         url = f"{base_url}/organisationUnitLevels.json?paging=false&fields=id,level,name"
         logger.info(f"[DHIS2 Utils] Fetching org unit levels from: {url}")
-        resp = requests.get(url, auth=auth, timeout=30)
+        resp = session.get(url, auth=auth, timeout=30)
 
         if resp.status_code == 200:
             levels = resp.json().get("organisationUnitLevels", [])
@@ -74,6 +108,8 @@ def fetch_dx_display_names(
     if not dx_ids:
         return dx_names
 
+    session = get_dhis2_session()
+
     # DX endpoints to try
     dx_endpoints = [
         ("dataElements", "dataElements"),
@@ -96,7 +132,7 @@ def fetch_dx_display_names(
             logger.info(f"[DHIS2 Utils] Trying {endpoint_name}: {url}")
 
             try:
-                resp = requests.get(url, auth=auth, timeout=30)
+                resp = session.get(url, auth=auth, timeout=30)
                 if resp.status_code == 200:
                     dx_data = resp.json().get(response_key, [])
                     if dx_data:
@@ -128,6 +164,8 @@ def fetch_org_units_with_ancestors(
 ) -> tuple[dict[str, str], dict[str, int], dict[str, str | None]]:
     """
     Fetch org unit details including all ancestors using the path field.
+    
+    Uses connection pooling and retry logic for better performance and reliability.
 
     Returns:
         - ou_names: dict mapping ou_id to display name
@@ -143,22 +181,27 @@ def fetch_org_units_with_ancestors(
 
     logger.info(f"[DHIS2 Utils] fetch_org_units_with_ancestors called for {len(ou_ids)} IDs: {ou_ids[:5]}...")
 
+    # Use session with connection pooling for better performance
+    session = get_dhis2_session()
+
     try:
         # Fetch selected org units with path - batch if necessary
         all_ancestor_ids: set[str] = set()
 
-        # Process in smaller batches to avoid URL length limits
-        BATCH_SIZE = 50
-        for batch_start in range(0, len(ou_ids), BATCH_SIZE):
+        # Process in larger batches for fewer API calls (100 instead of 50)
+        BATCH_SIZE = 100
+        total_batches = (len(ou_ids) + BATCH_SIZE - 1) // BATCH_SIZE
+        
+        for batch_num, batch_start in enumerate(range(0, len(ou_ids), BATCH_SIZE), 1):
             batch_ids = ou_ids[batch_start:batch_start + BATCH_SIZE]
             ou_filter = ",".join(batch_ids)
             url = f"{base_url}/organisationUnits.json?filter=id:in:[{ou_filter}]&fields=id,name,displayName,level,path,parent[id]&paging=false"
 
-            if batch_start == 0:
-                logger.info(f"[DHIS2 Utils] Fetching org units batch 1/{(len(ou_ids) + BATCH_SIZE - 1) // BATCH_SIZE}")
+            logger.info(f"[DHIS2 Utils] Fetching org units batch {batch_num}/{total_batches} ({len(batch_ids)} units)")
 
             try:
-                resp = requests.get(url, auth=auth, timeout=300)
+                # Use session for connection reuse
+                resp = session.get(url, auth=auth, timeout=60)
 
                 if resp.status_code == 200:
                     ou_data = resp.json().get("organisationUnits", [])
@@ -179,24 +222,38 @@ def fetch_org_units_with_ancestors(
                             all_ancestor_ids.update(path_ids)
                 else:
                     logger.warning(f"[DHIS2 Utils] Failed to fetch org units batch: HTTP {resp.status_code}")
+            except requests.exceptions.Timeout:
+                logger.warning(f"[DHIS2 Utils] Timeout fetching batch {batch_num}, continuing with partial data")
+                continue
             except Exception as batch_error:
-                logger.warning(f"[DHIS2 Utils] Error fetching batch: {batch_error}")
+                logger.warning(f"[DHIS2 Utils] Error fetching batch {batch_num}: {batch_error}")
                 continue
 
         logger.info(f"[DHIS2 Utils] Fetched {len(ou_names)} org units, found {len(all_ancestor_ids)} ancestor IDs from paths")
 
-        # Fetch ancestor details - also in batches
+        # Fetch ancestor details - also in batches, but skip if we already have most
         missing_ancestors = [a for a in all_ancestor_ids if a not in ou_names]
+        
+        # Limit ancestor fetching to avoid excessive API calls
+        MAX_ANCESTORS = 200
+        if len(missing_ancestors) > MAX_ANCESTORS:
+            logger.warning(f"[DHIS2 Utils] Limiting ancestor fetch from {len(missing_ancestors)} to {MAX_ANCESTORS}")
+            missing_ancestors = missing_ancestors[:MAX_ANCESTORS]
+        
         if missing_ancestors:
             logger.info(f"[DHIS2 Utils] Fetching {len(missing_ancestors)} missing ancestors")
+            total_anc_batches = (len(missing_ancestors) + BATCH_SIZE - 1) // BATCH_SIZE
 
-            for batch_start in range(0, len(missing_ancestors), BATCH_SIZE):
+            for batch_num, batch_start in enumerate(range(0, len(missing_ancestors), BATCH_SIZE), 1):
                 batch_ids = missing_ancestors[batch_start:batch_start + BATCH_SIZE]
                 anc_filter = ",".join(batch_ids)
                 anc_url = f"{base_url}/organisationUnits.json?filter=id:in:[{anc_filter}]&fields=id,name,displayName,level,parent[id]&paging=false"
 
+                logger.info(f"[DHIS2 Utils] Fetching ancestors batch {batch_num}/{total_anc_batches}")
+
                 try:
-                    anc_resp = requests.get(anc_url, auth=auth, timeout=300)
+                    # Use session for connection reuse
+                    anc_resp = session.get(anc_url, auth=auth, timeout=60)
                     if anc_resp.status_code == 200:
                         ancestors = anc_resp.json().get("organisationUnits", [])
                         for anc in ancestors:
@@ -209,6 +266,9 @@ def fetch_org_units_with_ancestors(
                             ou_parents[anc_id] = anc_parent.get("id") if anc_parent else None
                     else:
                         logger.warning(f"[DHIS2 Utils] Failed to fetch ancestors batch: HTTP {anc_resp.status_code}")
+                except requests.exceptions.Timeout:
+                    logger.warning(f"[DHIS2 Utils] Timeout fetching ancestors batch {batch_num}, continuing")
+                    continue
                 except Exception as anc_error:
                     logger.warning(f"[DHIS2 Utils] Error fetching ancestors batch: {anc_error}")
                     continue

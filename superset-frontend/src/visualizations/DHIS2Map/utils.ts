@@ -306,7 +306,23 @@ export function calculateBounds(features: BoundaryFeature[]): L.LatLngBounds {
   const geojsonLayer = L.geoJSON(
     featureCollection as GeoJSON.FeatureCollection,
   );
-  return geojsonLayer.getBounds();
+  const bounds = geojsonLayer.getBounds();
+  
+  // Debug: Log the calculated bounds with actual values
+  const ne = bounds.getNorthEast();
+  const sw = bounds.getSouthWest();
+  const center = bounds.getCenter();
+  // eslint-disable-next-line no-console
+  console.log('[calculateBounds] Computed bounds:', {
+    northEast: { lat: ne.lat, lng: ne.lng },
+    southWest: { lat: sw.lat, lng: sw.lng },
+    center: { lat: center.lat, lng: center.lng },
+    featureCount: features.length,
+    // Check if bounds are in Uganda region (lat: -1.5 to 4.2, lng: 29.5 to 35)
+    isInUganda: ne.lat <= 5 && sw.lat >= -2 && ne.lng <= 36 && sw.lng >= 29,
+  });
+  
+  return bounds;
 }
 
 /**

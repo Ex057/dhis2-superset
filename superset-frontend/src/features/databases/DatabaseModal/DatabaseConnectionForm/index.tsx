@@ -69,10 +69,11 @@ const DatabaseConnectionForm = ({
       >
         {parameters &&
           FormFieldOrder.filter((key: string) => {
+            // Check if this field is defined in the database's parameter schema
             const isStandardField =
               Object.keys(parameters.properties).includes(key) ||
-              key === 'database_name' ||
-              key === 'dhis2_authentication'; // Include custom DHIS2 auth component
+              key === 'database_name';
+            // Removed hardcoded dhis2_authentication - now only shows if defined in schema
 
             // Exclude fields marked as hidden (e.g., DHIS2 fields handled by custom component)
             const isHidden =
