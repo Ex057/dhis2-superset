@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { TileLayer } from 'react-leaflet';
 import { styled } from '@superset-ui/core';
 
@@ -73,7 +73,8 @@ export function BaseMapLayer({ mapType }: BaseMapLayerProps): React.ReactElement
     return null;
   }
   // @ts-ignore - React 19 compatibility with react-leaflet
-  return <TileLayer url={config.url} />;
+  // Key prop forces TileLayer to remount when mapType changes
+  return <TileLayer key={mapType} url={config.url} attribution={config.attribution} maxZoom={config.maxZoom} />;
 }
 
 /* eslint-disable theme-colors/no-literal-colors */
@@ -81,7 +82,7 @@ const SelectorWrapper = styled.div`
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 1000;
+  z-index: 1001;
 `;
 
 const SelectorButton = styled.button`
@@ -105,14 +106,16 @@ const SelectorButton = styled.button`
 const DropdownMenu = styled.div`
   position: absolute;
   top: 100%;
-  right: 0;
+  left: 0;
   margin-top: 4px;
   background: #ffffff;
+  border: 2px solid rgba(0, 0, 0, 0.2);
   border-radius: 4px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 200px;
   max-height: 300px;
   overflow-y: auto;
+  z-index: 1002;
 `;
 
 const MapOption = styled.button<{ $isActive: boolean }>`
@@ -147,9 +150,27 @@ export function BaseMapSelector({
   onMapChange,
 }: BaseMapSelectorProps): React.ReactElement {
   const [isOpen, setIsOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+    return undefined;
+  }, [isOpen]);
 
   return (
-    <SelectorWrapper>
+    <SelectorWrapper ref={wrapperRef}>
       <SelectorButton type="button" onClick={() => setIsOpen(!isOpen)}>
         🗺️ {BASE_MAPS[currentMap]?.name || 'Select Map'}
         <span style={{ fontSize: 8 }}>{isOpen ? '▲' : '▼'}</span>
