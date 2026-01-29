@@ -17,14 +17,50 @@
  * under the License.
  */
 
-import { useState } from 'react';
-import { styled, t } from '@superset-ui/core';
+import { type CSSProperties, useEffect, useMemo, useState } from 'react';
+import { styled, t, useTheme } from '@superset-ui/core';
 import { Button, Loading } from '@superset-ui/core/components';
+import { Icons } from '@superset-ui/core/components/Icons';
 import logoImage from 'src/assets/images/loog.jpg';
 import DashboardContentArea from 'src/features/home/DashboardContentArea';
 import ConfigurableSidebar, { type Dashboard } from './ConfigurableSidebar';
 import { usePublicPageConfig } from './usePublicPageConfig';
 import { PublicPageLayoutConfig } from './config';
+
+type PublicPageTheme = 'light' | 'dark';
+
+const PUBLIC_PAGE_THEME_STORAGE_KEY = 'superset.publicLandingPage.theme';
+
+const getStoredTheme = (): PublicPageTheme => {
+  if (typeof window === 'undefined') {
+    return 'light';
+  }
+
+  try {
+    const storedTheme = window.localStorage.getItem(
+      PUBLIC_PAGE_THEME_STORAGE_KEY,
+    );
+    if (storedTheme === 'dark' || storedTheme === 'light') {
+      return storedTheme;
+    }
+  } catch (error) {
+    console.warn('Unable to read public page theme preference', error);
+  }
+
+  return 'light';
+};
+
+const storeThemePreference = (theme: PublicPageTheme) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(PUBLIC_PAGE_THEME_STORAGE_KEY, theme);
+  } catch (error) {
+    console.warn('Unable to store public page theme preference', error);
+  }
+};
 
 // Dynamic styled components that accept configuration
 const PageWrapper = styled.div<{ $customCss?: string }>`
@@ -33,7 +69,8 @@ const PageWrapper = styled.div<{ $customCss?: string }>`
   left: 0;
   right: 0;
   bottom: 0;
-  background: white;
+  background: var(--public-page-page-background, white);
+  color: var(--public-page-text-color, inherit);
   z-index: 9999;
   overflow-y: auto;
   ${({ $customCss }) => $customCss || ''}
@@ -44,8 +81,10 @@ const PublicNavbar = styled.div<{
   $backgroundColor: string;
   $boxShadow: string;
 }>`
-  background: ${({ $backgroundColor }) => $backgroundColor};
-  box-shadow: ${({ $boxShadow }) => $boxShadow};
+  background: ${({ $backgroundColor }) =>
+    `var(--public-page-navbar-background, ${$backgroundColor})`};
+  box-shadow: ${({ $boxShadow }) =>
+    `var(--public-page-navbar-shadow, ${$boxShadow})`};
   position: fixed;
   top: 0;
   left: 0;
@@ -87,11 +126,11 @@ const NavLinks = styled.div`
 
 const NavLink = styled.a`
   ${({ theme }) => `
-    color: ${theme.colorText};
+    color: var(--public-page-text-color, ${theme.colorText});
     text-decoration: none;
     font-size: 14px;
     &:hover {
-      color: ${theme.colorPrimary};
+      color: var(--public-page-link-hover-color, ${theme.colorPrimary});
     }
   `}
 `;
@@ -110,7 +149,8 @@ const ContentWrapper = styled.div<{
   min-height: calc(100vh - ${({ $navbarHeight }) => $navbarHeight}px);
   position: relative;
   padding-top: ${({ $navbarHeight }) => $navbarHeight}px;
-  background: ${({ $backgroundColor }) => $backgroundColor};
+  background: ${({ $backgroundColor }) =>
+    `var(--public-page-content-background, ${$backgroundColor})`};
 
   ${({ $sidebarEnabled, $sidebarWidth, $sidebarPosition }) =>
     $sidebarEnabled
@@ -149,7 +189,7 @@ const WelcomeTitle = styled.h1`
   ${({ theme }) => `
     font-size: 28px;
     font-weight: 600;
-    color: ${theme.colorText};
+    color: var(--public-page-text-color, ${theme.colorText});
     margin-bottom: ${theme.sizeUnit * 2}px;
   `}
 `;
@@ -157,7 +197,7 @@ const WelcomeTitle = styled.h1`
 const WelcomeDescription = styled.p`
   ${({ theme }) => `
     font-size: 16px;
-    color: ${theme.colorTextSecondary};
+    color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
     max-width: 500px;
   `}
 `;
@@ -172,8 +212,9 @@ const Footer = styled.div<{
   left: 0;
   right: 0;
   height: ${({ $height }) => $height}px;
-  background: ${({ $backgroundColor }) => $backgroundColor};
-  color: ${({ $textColor }) => $textColor};
+  background: ${({ $backgroundColor }) =>
+    `var(--public-page-footer-background, ${$backgroundColor})`};
+  color: ${({ $textColor }) => `var(--public-page-footer-text, ${$textColor})`};
   display: flex;
   align-items: center;
   justify-content: center;
@@ -183,7 +224,7 @@ const Footer = styled.div<{
 `;
 
 const FooterLink = styled.a<{ $textColor: string }>`
-  color: ${({ $textColor }) => $textColor};
+  color: ${({ $textColor }) => `var(--public-page-footer-text, ${$textColor})`};
   text-decoration: none;
   &:hover {
     text-decoration: underline;
@@ -198,6 +239,23 @@ const LoadingWrapper = styled.div`
   width: 100%;
 `;
 
+const ThemeToggleButton = styled(Button)`
+  ${({ theme }) => `
+    padding: ${theme.sizeUnit}px;
+    border-radius: ${theme.borderRadius}px;
+    border-color: var(--public-page-toggle-border, ${theme.colorBorder});
+    background: var(--public-page-toggle-bg, ${theme.colorBgContainer});
+    color: var(--public-page-toggle-color, ${theme.colorText});
+
+    &:hover,
+    &:focus {
+      border-color: var(--public-page-toggle-border, ${theme.colorBorder});
+      background: var(--public-page-hover-bg, ${theme.colorBgLayout});
+      color: var(--public-page-toggle-color, ${theme.colorText});
+    }
+  `}
+`;
+
 interface PublicLandingPageProps {
   /** Optional override configuration */
   overrideConfig?: Partial<PublicPageLayoutConfig>;
@@ -207,9 +265,11 @@ export default function PublicLandingPage({
   overrideConfig,
 }: PublicLandingPageProps = {}) {
   const { config: baseConfig, loading: configLoading } = usePublicPageConfig();
+  const theme = useTheme();
   const [selectedDashboard, setSelectedDashboard] = useState<
     Dashboard | undefined
   >(undefined);
+  const [themeMode, setThemeMode] = useState<PublicPageTheme>(getStoredTheme);
 
   // Merge override config if provided
   const config = overrideConfig
@@ -224,6 +284,94 @@ export default function PublicLandingPage({
     setSelectedDashboard(dashboard);
   };
 
+  const { navbar, sidebar, content, footer } = config;
+  const isDarkMode = themeMode === 'dark';
+
+  useEffect(() => {
+    storeThemePreference(themeMode);
+  }, [themeMode]);
+
+  const themeVariables = useMemo<CSSProperties>(
+    () =>
+      ({
+        '--public-page-page-background': isDarkMode ? '#0f2238' : '#ffffff',
+        '--public-page-navbar-background': isDarkMode
+          ? '#102a43'
+          : navbar.backgroundColor,
+        '--public-page-navbar-shadow': isDarkMode
+          ? '0 2px 10px rgba(8, 18, 32, 0.6)'
+          : navbar.boxShadow,
+        '--public-page-content-background': isDarkMode
+          ? '#13263d'
+          : content.backgroundColor,
+        '--public-page-sidebar-background': isDarkMode
+          ? '#0f2238'
+          : sidebar.backgroundColor,
+        '--public-page-sidebar-border': isDarkMode
+          ? '1px solid #1f3a57'
+          : sidebar.borderStyle,
+        '--public-page-footer-background': isDarkMode
+          ? '#102a43'
+          : footer.backgroundColor,
+        '--public-page-footer-text': isDarkMode ? '#9fb3c8' : footer.textColor,
+        '--public-page-text-color': isDarkMode ? '#e6edf3' : theme.colorText,
+        '--public-page-text-secondary-color': isDarkMode
+          ? '#9fb3c8'
+          : theme.colorTextSecondary,
+        '--public-page-primary-color': isDarkMode
+          ? '#74b3ff'
+          : theme.colorPrimary,
+        '--public-page-primary-bg': isDarkMode
+          ? 'rgba(116, 179, 255, 0.2)'
+          : theme.colorPrimaryBg,
+        '--public-page-link-hover-color': isDarkMode
+          ? '#74b3ff'
+          : theme.colorPrimary,
+        '--public-page-hover-bg': isDarkMode
+          ? '#1b3553'
+          : theme.colorBgLayout,
+        '--public-page-toggle-bg': isDarkMode
+          ? '#15324f'
+          : theme.colorBgContainer,
+        '--public-page-toggle-border': isDarkMode
+          ? '#2a4b6a'
+          : theme.colorBorder,
+        '--public-page-toggle-color': isDarkMode
+          ? '#e6edf3'
+          : theme.colorText,
+      }) as CSSProperties,
+    [
+      content.backgroundColor,
+      footer.backgroundColor,
+      footer.textColor,
+      isDarkMode,
+      navbar.backgroundColor,
+      navbar.boxShadow,
+      sidebar.backgroundColor,
+      sidebar.borderStyle,
+      theme.colorBgContainer,
+      theme.colorBgLayout,
+      theme.colorBorder,
+      theme.colorPrimary,
+      theme.colorPrimaryBg,
+      theme.colorText,
+      theme.colorTextSecondary,
+    ],
+  );
+
+  const logoSrc = isDarkMode
+    ? navbar.logo.darkSrc || navbar.logo.src
+    : navbar.logo.src;
+  const logoTitleColor = isDarkMode
+    ? navbar.title.darkColor || navbar.title.color
+    : navbar.title.color;
+
+  const handleThemeToggle = () => {
+    setThemeMode(previousTheme =>
+      previousTheme === 'dark' ? 'light' : 'dark',
+    );
+  };
+
   if (configLoading) {
     return (
       <LoadingWrapper>
@@ -232,10 +380,8 @@ export default function PublicLandingPage({
     );
   }
 
-  const { navbar, sidebar, content, footer } = config;
-
   return (
-    <PageWrapper $customCss={config.customCss}>
+    <PageWrapper $customCss={config.customCss} style={themeVariables}>
       {navbar.enabled && (
         <PublicNavbar
           $height={navbar.height}
@@ -245,7 +391,7 @@ export default function PublicLandingPage({
           <LogoSection>
             {navbar.logo.enabled && (
               <LogoImage
-                src={navbar.logo.src || logoImage}
+                src={logoSrc || logoImage}
                 alt={navbar.logo.alt}
                 $height={navbar.logo.height}
               />
@@ -254,7 +400,7 @@ export default function PublicLandingPage({
               <LogoText
                 $fontSize={navbar.title.fontSize}
                 $fontWeight={navbar.title.fontWeight}
-                $color={navbar.title.color}
+                $color={logoTitleColor}
               >
                 {navbar.title.text}
               </LogoText>
@@ -272,6 +418,17 @@ export default function PublicLandingPage({
                 {link.text}
               </NavLink>
             ))}
+            <ThemeToggleButton
+              type="default"
+              aria-label={
+                isDarkMode ? t('Switch to light mode') : t('Switch to dark mode')
+              }
+              title={
+                isDarkMode ? t('Switch to light mode') : t('Switch to dark mode')
+              }
+              icon={isDarkMode ? <Icons.SunOutlined /> : <Icons.MoonOutlined />}
+              onClick={handleThemeToggle}
+            />
             {navbar.loginButton.enabled && (
               <Button type={navbar.loginButton.type} onClick={handleLogin}>
                 {t(navbar.loginButton.text)}

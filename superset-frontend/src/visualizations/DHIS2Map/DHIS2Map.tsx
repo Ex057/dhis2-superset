@@ -218,7 +218,7 @@ function MapAutoFocus({
           // Fit bounds with padding - ensure all features are visible
           // Use higher maxZoom for smaller areas, lower for larger areas
           const maxZoomLevel =
-            boundsSize < 50000 ? 15 : boundsSize < 200000 ? 13 : 11;
+            boundsSize < 50000 ? 13 : boundsSize < 200000 ? 11 : 9;
 
           // eslint-disable-next-line no-console
           console.log(
@@ -226,7 +226,7 @@ function MapAutoFocus({
           );
 
           map.fitBounds(bounds, {
-            padding: [40, 40], // More padding for better visibility
+            padding: [70, 70], // Extra padding to keep full boundary set visible
             maxZoom: maxZoomLevel,
             animate: true,
             duration: 0.5,
@@ -258,6 +258,90 @@ function MapAutoFocus({
   }, [boundaryIdsKey, enabled, map]);
 
   return null;
+}
+
+interface BoundaryMaskProps {
+  boundaries: BoundaryFeature[];
+  enabled: boolean;
+}
+
+function BoundaryMask({
+  boundaries,
+  enabled,
+}: BoundaryMaskProps): ReactElement | null {
+  const map = useMap();
+  const [paneReady, setPaneReady] = useState(false);
+
+  const maskFeature = useMemo(() => {
+    if (!enabled || boundaries.length === 0) {
+      return null;
+    }
+
+    const bounds = calculateBounds(boundaries);
+    if (!bounds || !bounds.isValid()) {
+      return null;
+    }
+
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+
+    const outerRing = [
+      [-180, 90],
+      [180, 90],
+      [180, -90],
+      [-180, -90],
+      [-180, 90],
+    ];
+
+    const innerRing = [
+      [sw.lng, ne.lat],
+      [ne.lng, ne.lat],
+      [ne.lng, sw.lat],
+      [sw.lng, sw.lat],
+      [sw.lng, ne.lat],
+    ];
+
+    return {
+      type: 'Feature' as const,
+      geometry: {
+        type: 'Polygon' as const,
+        coordinates: [outerRing, innerRing],
+      },
+      properties: {},
+    };
+  }, [boundaries, enabled]);
+
+  useEffect(() => {
+    if (!enabled || !map) {
+      setPaneReady(false);
+      return;
+    }
+
+    const paneName = 'dhis2MaskPane';
+    let pane = map.getPane(paneName);
+    if (!pane) {
+      pane = map.createPane(paneName);
+      pane.style.zIndex = '250';
+    }
+    setPaneReady(true);
+  }, [enabled, map]);
+
+  if (!maskFeature || !paneReady) {
+    return null;
+  }
+
+  return (
+    <GeoJSON
+      data={maskFeature as any}
+      style={() => ({
+        fillColor: '#ffffff',
+        fillOpacity: 0.75,
+        color: 'transparent',
+        weight: 0,
+      })}
+      pane="dhis2MaskPane"
+    />
+  );
 }
 
 // Component for manual focus button
@@ -1741,9 +1825,16 @@ function DHIS2Map({
         {/* @ts-ignore - React 19 compatibility */}
         <ZoomControl position="topright" />
 
-        {/* Auto-focus map when boundaries load */}
-        {/* @ts-ignore - React 19 compatibility */}
-        <MapAutoFocus boundaries={displayBoundaries} enabled={!loading} />
+      {/* Auto-focus map when boundaries load */}
+      {/* @ts-ignore - React 19 compatibility */}
+      <MapAutoFocus boundaries={displayBoundaries} enabled={!loading} />
+
+      {/* Light basemap focus mask to de-emphasize areas outside boundaries */}
+      {/* @ts-ignore - React 19 compatibility */}
+      <BoundaryMask
+        boundaries={displayBoundaries}
+        enabled={baseMapType === 'light'}
+      />
 
         {/* Manual focus button */}
         {displayBoundaries.length > 0 && (

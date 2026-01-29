@@ -39,6 +39,8 @@ export interface PublicPageNavbarConfig {
     enabled: boolean;
     /** Logo image source (URL or imported image) */
     src?: string;
+    /** Optional dark mode logo source */
+    darkSrc?: string;
     /** Alt text for the logo */
     alt: string;
     /** Logo height in pixels */
@@ -56,6 +58,8 @@ export interface PublicPageNavbarConfig {
     fontWeight: number;
     /** Title color (CSS color value) */
     color: string;
+    /** Optional dark mode title color */
+    darkColor?: string;
   };
   /** Login button configuration */
   loginButton: {

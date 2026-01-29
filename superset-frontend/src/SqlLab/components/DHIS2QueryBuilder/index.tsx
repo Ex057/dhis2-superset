@@ -17,14 +17,20 @@
  * under the License.
  */
 
-import { useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { styled, t } from '@superset-ui/core';
-import { Button, Icons } from '@superset-ui/core/components';
-// eslint-disable-next-line no-restricted-imports
-import { message, Collapse } from 'antd';
-import { PeriodSelector } from 'src/features/datasets/AddDataset/DHIS2ParameterBuilder/PeriodSelector';
-import { DxSelector } from 'src/features/datasets/AddDataset/DHIS2ParameterBuilder/DxSelector';
-import { OuSelector } from 'src/features/datasets/AddDataset/DHIS2ParameterBuilder/OuSelector';
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Collapse,
+  Input,
+  Select,
+  Space,
+  Typography,
+  type SelectValue,
+} from '@superset-ui/core/components';
+import { Icons } from '@superset-ui/core/components/Icons';
 
 const { Panel } = Collapse;
 
@@ -32,6 +38,11 @@ interface DHIS2QueryBuilderProps {
   onInsertSQL: (sql: string) => void;
   databaseId?: number;
   endpoint?: string;
+}
+
+interface SelectedItemListProps {
+  items: string[];
+  onRemove: (value: string) => void;
 }
 
 const StyledContainer = styled.div`
@@ -94,51 +105,221 @@ const StyledContainer = styled.div`
       overflow-y: auto;
     }
 
+    .help-text {
+      color: ${theme.colorTextSecondary};
+      font-size: 12px;
+      margin-top: ${theme.sizeUnit}px;
+    }
+
     .button-group {
       display: flex;
       gap: ${theme.sizeUnit * 2}px;
       margin-top: ${theme.sizeUnit * 3}px;
+      flex-wrap: wrap;
+    }
+
+    .input-row {
+      display: flex;
+      gap: ${theme.sizeUnit * 2}px;
+      align-items: center;
+    }
+
+    .selected-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: ${theme.sizeUnit}px;
+      margin-top: ${theme.sizeUnit * 2}px;
+    }
+
+    .selected-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: ${theme.sizeUnit}px;
+      padding: ${theme.sizeUnit}px ${theme.sizeUnit * 1.5}px;
+      border-radius: ${theme.borderRadius}px;
+      background: ${theme.colorBgElevated};
+      border: 1px solid ${theme.colorBorder};
+      font-size: 12px;
     }
   `}
 `;
+
+const RELATIVE_PERIOD_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: t('Today'), value: 'TODAY' },
+  { label: t('Yesterday'), value: 'YESTERDAY' },
+  { label: t('Last 7 days'), value: 'LAST_7_DAYS' },
+  { label: t('Last 30 days'), value: 'LAST_30_DAYS' },
+  { label: t('This month'), value: 'THIS_MONTH' },
+  { label: t('Last month'), value: 'LAST_MONTH' },
+  { label: t('This quarter'), value: 'THIS_QUARTER' },
+  { label: t('Last quarter'), value: 'LAST_QUARTER' },
+  { label: t('This year'), value: 'THIS_YEAR' },
+  { label: t('Last year'), value: 'LAST_YEAR' },
+  { label: t('Last 3 months'), value: 'LAST_3_MONTHS' },
+  { label: t('Last 6 months'), value: 'LAST_6_MONTHS' },
+  { label: t('Last 12 months'), value: 'LAST_12_MONTHS' },
+];
+
+const ORG_UNIT_QUICK_OPTIONS = [
+  { label: t('User org unit'), value: 'USER_ORGUNIT' },
+  { label: t('Children'), value: 'USER_ORGUNIT_CHILDREN' },
+  { label: t('Grandchildren'), value: 'USER_ORGUNIT_GRANDCHILDREN' },
+];
+
+const DISPLAY_PROPERTY_OPTIONS = [
+  { label: t('Name'), value: 'NAME' },
+  { label: t('Short name'), value: 'SHORTNAME' },
+  { label: t('Code'), value: 'CODE' },
+];
+
+function SelectedItemList({ items, onRemove }: SelectedItemListProps) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="selected-list">
+      {items.map(item => (
+        <span className="selected-pill" key={item}>
+          {item}
+          <Button
+            buttonStyle="link"
+            buttonSize="small"
+            icon={<Icons.CloseOutlined />}
+            onClick={() => onRemove(item)}
+          />
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export default function DHIS2QueryBuilder({
   onInsertSQL,
   databaseId = 0,
   endpoint = 'analytics',
 }: DHIS2QueryBuilderProps) {
-  const [selectedData, setSelectedData] = useState<string[]>([]);
-  const [selectedPeriods, setSelectedPeriods] = useState<string[]>([
-    'LAST_YEAR',
-  ]);
-  const [selectedOrgUnits, setSelectedOrgUnits] = useState<string[]>([
+  const [dataElements, setDataElements] = useState<string[]>([]);
+  const [dataElementInput, setDataElementInput] = useState('');
+  const [relativePeriods, setRelativePeriods] = useState<string[]>([]);
+  const [customPeriods, setCustomPeriods] = useState<string[]>([]);
+  const [customPeriodInput, setCustomPeriodInput] = useState('');
+  const [quickOrgUnits, setQuickOrgUnits] = useState<string[]>([
     'USER_ORGUNIT',
   ]);
+  const [customOrgUnits, setCustomOrgUnits] = useState<string[]>([]);
+  const [customOrgUnitInput, setCustomOrgUnitInput] = useState('');
+  const [displayProperty, setDisplayProperty] = useState('NAME');
+  const [skipMeta, setSkipMeta] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
 
-  const generatedSQL = generateAnalyticsSQL(
-    selectedData,
-    selectedPeriods,
-    selectedOrgUnits,
+  const orgUnits = useMemo(
+    () => [...new Set([...quickOrgUnits, ...customOrgUnits])],
+    [quickOrgUnits, customOrgUnits],
+  );
+
+  const periods = useMemo(
+    () => [...new Set([...relativePeriods, ...customPeriods])],
+    [relativePeriods, customPeriods],
+  );
+
+  const validationErrors = useMemo(() => {
+    const errors: string[] = [];
+    if (dataElements.length === 0) {
+      errors.push(t('Add at least one data element (dx).'));
+    }
+    if (periods.length === 0) {
+      errors.push(t('Select at least one period (pe).'));
+    }
+    return errors;
+  }, [dataElements.length, periods.length]);
+
+  const generatedSQL = useMemo(
+    () =>
+      generateAnalyticsSQL({
+        dataElements,
+        periods,
+        orgUnits,
+        displayProperty,
+        skipMeta,
+        endpoint,
+      }),
+    [dataElements, periods, orgUnits, displayProperty, skipMeta, endpoint],
+  );
+
+  useEffect(() => {
+    if (!copyStatus) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyStatus(null), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
+
+  const handleRelativePeriodsChange = useCallback((value: SelectValue) => {
+    if (Array.isArray(value)) {
+      setRelativePeriods(value.filter(Boolean).map(String));
+      return;
+    }
+    setRelativePeriods(value ? [String(value)] : []);
+  }, []);
+
+  const handleDisplayPropertyChange = useCallback((value: SelectValue) => {
+    if (typeof value === 'string') {
+      setDisplayProperty(value);
+    }
+  }, []);
+
+  const addItem = useCallback(
+    (
+      value: string,
+      setValue: (next: string[]) => void,
+      list: string[],
+      resetInput: () => void,
+    ) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (!list.includes(trimmed)) {
+        setValue([...list, trimmed]);
+      }
+      resetInput();
+    },
+    [],
+  );
+
+  const removeItem = useCallback(
+    (value: string, list: string[], setList: (next: string[]) => void) => {
+      setList(list.filter(item => item !== value));
+    },
+    [],
   );
 
   const handleInsertSQL = useCallback(() => {
-    if (selectedData.length > 0 && selectedPeriods.length > 0) {
+    if (validationErrors.length === 0) {
       onInsertSQL(generatedSQL);
-      message.success(t('SQL inserted at cursor'));
+      setShowValidation(false);
     } else {
-      message.warning(t('Please select at least one data element and period'));
+      setShowValidation(true);
     }
-  }, [selectedData, selectedPeriods, generatedSQL, onInsertSQL]);
+  }, [validationErrors.length, generatedSQL, onInsertSQL]);
 
   const handleCopySQL = useCallback(() => {
     navigator.clipboard.writeText(generatedSQL);
-    message.success(t('SQL copied to clipboard'));
+    setCopyStatus(t('SQL copied to clipboard'));
   }, [generatedSQL]);
 
   const handleClear = useCallback(() => {
-    setSelectedData([]);
-    setSelectedPeriods(['LAST_YEAR']);
-    setSelectedOrgUnits(['USER_ORGUNIT']);
+    setDataElements([]);
+    setRelativePeriods([]);
+    setCustomPeriods([]);
+    setQuickOrgUnits(['USER_ORGUNIT']);
+    setCustomOrgUnits([]);
+    setDisplayProperty('NAME');
+    setSkipMeta(false);
+    setShowValidation(false);
+    setCopyStatus(null);
   }, []);
 
   return (
@@ -147,39 +328,189 @@ export default function DHIS2QueryBuilder({
         <Icons.AppstoreOutlined /> {t('DHIS2 Query Builder')}
       </div>
 
-      <Collapse defaultActiveKey={['1', '2', '3']}>
+      <Collapse defaultActiveKey={['1', '2', '3', '4']}>
         {/* Data Elements */}
-        <Panel
-          header={`${t('Data Elements')} (${selectedData.length})`}
-          key="1"
-        >
-          <DxSelector
-            databaseId={databaseId}
-            endpoint={endpoint}
-            value={selectedData}
-            onChange={setSelectedData}
-          />
+        <Panel header={`${t('Data Elements')} (${dataElements.length})`} key="1">
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div className="input-row">
+              <Input
+                value={dataElementInput}
+                onChange={event => setDataElementInput(event.target.value)}
+                onPressEnter={() =>
+                  addItem(
+                    dataElementInput,
+                    setDataElements,
+                    dataElements,
+                    () => setDataElementInput(''),
+                  )
+                }
+                placeholder={t('Enter data element UID')}
+                aria-label={t('Data element UID')}
+              />
+              <Button
+                buttonStyle="secondary"
+                onClick={() =>
+                  addItem(
+                    dataElementInput,
+                    setDataElements,
+                    dataElements,
+                    () => setDataElementInput(''),
+                  )
+                }
+              >
+                {t('Add')}
+              </Button>
+            </div>
+            <SelectedItemList
+              items={dataElements}
+              onRemove={value =>
+                removeItem(value, dataElements, setDataElements)
+              }
+            />
+            <div className="help-text">
+              {t('Add one or more DHIS2 data element UIDs (dx).')}
+            </div>
+          </Space>
         </Panel>
 
         {/* Periods */}
-        <Panel header={`${t('Periods')} (${selectedPeriods.length})`} key="2">
-          <PeriodSelector
-            databaseId={databaseId}
-            value={selectedPeriods}
-            onChange={setSelectedPeriods}
-          />
+        <Panel header={`${t('Periods')} (${periods.length})`} key="2">
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div>
+              <Typography.Text strong>{t('Relative periods')}</Typography.Text>
+              <Select
+                ariaLabel={t('Select relative periods')}
+                mode="multiple"
+                value={relativePeriods}
+                options={RELATIVE_PERIOD_OPTIONS}
+                onChange={handleRelativePeriodsChange}
+                allowClear
+                css={{ width: '100%', marginTop: 8 }}
+              />
+            </div>
+            <div>
+              <Typography.Text strong>{t('Custom periods')}</Typography.Text>
+              <div className="input-row" style={{ marginTop: 8 }}>
+                <Input
+                  value={customPeriodInput}
+                  onChange={event => setCustomPeriodInput(event.target.value)}
+                  onPressEnter={() =>
+                    addItem(
+                      customPeriodInput,
+                      setCustomPeriods,
+                      customPeriods,
+                      () => setCustomPeriodInput(''),
+                    )
+                  }
+                  placeholder={t('Enter custom period (e.g. 202401)')}
+                  aria-label={t('Custom period')}
+                />
+                <Button
+                  buttonStyle="secondary"
+                  onClick={() =>
+                    addItem(
+                      customPeriodInput,
+                      setCustomPeriods,
+                      customPeriods,
+                      () => setCustomPeriodInput(''),
+                    )
+                  }
+                >
+                  {t('Add')}
+                </Button>
+              </div>
+              <SelectedItemList
+                items={customPeriods}
+                onRemove={value =>
+                  removeItem(value, customPeriods, setCustomPeriods)
+                }
+              />
+            </div>
+            <div className="help-text">
+              {t('Select relative periods and/or add custom period IDs.')}
+            </div>
+          </Space>
         </Panel>
 
         {/* Organization Units */}
-        <Panel
-          header={`${t('Organisation Units')} (${selectedOrgUnits.length})`}
-          key="3"
-        >
-          <OuSelector
-            databaseId={databaseId}
-            value={selectedOrgUnits}
-            onChange={setSelectedOrgUnits}
-          />
+        <Panel header={`${t('Organisation Units')} (${orgUnits.length})`} key="3">
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div>
+              <Typography.Text strong>{t('Quick select')}</Typography.Text>
+              <div style={{ marginTop: 8 }}>
+                <Checkbox.Group
+                  options={ORG_UNIT_QUICK_OPTIONS}
+                  value={quickOrgUnits}
+                  onChange={values =>
+                    setQuickOrgUnits(values as string[])
+                  }
+                />
+              </div>
+            </div>
+            <div>
+              <Typography.Text strong>{t('Custom org units')}</Typography.Text>
+              <div className="input-row" style={{ marginTop: 8 }}>
+                <Input
+                  value={customOrgUnitInput}
+                  onChange={event => setCustomOrgUnitInput(event.target.value)}
+                  onPressEnter={() =>
+                    addItem(
+                      customOrgUnitInput,
+                      setCustomOrgUnits,
+                      customOrgUnits,
+                      () => setCustomOrgUnitInput(''),
+                    )
+                  }
+                  placeholder={t('Enter org unit UID')}
+                  aria-label={t('Org unit UID')}
+                />
+                <Button
+                  buttonStyle="secondary"
+                  onClick={() =>
+                    addItem(
+                      customOrgUnitInput,
+                      setCustomOrgUnits,
+                      customOrgUnits,
+                      () => setCustomOrgUnitInput(''),
+                    )
+                  }
+                >
+                  {t('Add')}
+                </Button>
+              </div>
+              <SelectedItemList
+                items={customOrgUnits}
+                onRemove={value =>
+                  removeItem(value, customOrgUnits, setCustomOrgUnits)
+                }
+              />
+            </div>
+            <div className="help-text">
+              {t('Use quick org unit keywords or add specific UIDs.')}
+            </div>
+          </Space>
+        </Panel>
+
+        {/* Options */}
+        <Panel header={t('Options')} key="4">
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div>
+              <Typography.Text strong>{t('Display property')}</Typography.Text>
+              <Select
+                ariaLabel={t('Select display property')}
+                value={displayProperty}
+                options={DISPLAY_PROPERTY_OPTIONS}
+                onChange={handleDisplayPropertyChange}
+                css={{ width: '100%', marginTop: 8 }}
+              />
+            </div>
+            <Checkbox
+              checked={skipMeta}
+              onChange={event => setSkipMeta(event.target.checked)}
+            >
+              {t('Skip metadata (faster responses)')}
+            </Checkbox>
+          </Space>
         </Panel>
       </Collapse>
 
@@ -187,64 +518,93 @@ export default function DHIS2QueryBuilder({
       <div style={{ marginTop: 16 }}>
         <div className="section-title">{t('Generated SQL')}</div>
         <div className="preview-container">{generatedSQL}</div>
+        {copyStatus && (
+          <div className="help-text" role="status">
+            {copyStatus}
+          </div>
+        )}
+        {showValidation && validationErrors.length > 0 && (
+          <Alert
+            type="error"
+            message={t('Fix the following before inserting SQL:')}
+            description={
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {validationErrors.map(error => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+            }
+          />
+        )}
       </div>
 
       {/* Actions */}
       <div className="button-group">
         <Button
-          type="primary"
+          buttonStyle="primary"
           icon={<Icons.AppstoreOutlined />}
           onClick={handleInsertSQL}
-          disabled={selectedData.length === 0 || selectedPeriods.length === 0}
+          disabled={validationErrors.length > 0}
         >
           {t('Insert at Cursor')}
         </Button>
         <Button icon={<Icons.CopyOutlined />} onClick={handleCopySQL}>
           {t('Copy SQL')}
         </Button>
-        <Button icon={<Icons.DeleteOutlined />} onClick={handleClear} danger>
+        <Button
+          icon={<Icons.DeleteOutlined />}
+          onClick={handleClear}
+          buttonStyle="danger"
+        >
           {t('Clear All')}
         </Button>
+      </div>
+      <div className="help-text">
+        {t('Database')} {databaseId} · {t('Endpoint')}: {endpoint}
       </div>
     </StyledContainer>
   );
 }
 
-function generateAnalyticsSQL(
-  dataElements: string[],
-  periods: string[],
-  orgUnits: string[],
-): string {
+function generateAnalyticsSQL({
+  dataElements,
+  periods,
+  orgUnits,
+  displayProperty,
+  skipMeta,
+  endpoint,
+}: {
+  dataElements: string[];
+  periods: string[];
+  orgUnits: string[];
+  displayProperty: string;
+  skipMeta: boolean;
+  endpoint: string;
+}): string {
   if (dataElements.length === 0 || periods.length === 0) {
     return '-- Select data elements and periods to generate SQL';
   }
 
-  const dxParam = dataElements.join(';');
-  const peParam = periods.join(';');
-  const ouParam = orgUnits.join(';');
-
   const params = [
-    `dimension=dx:${dxParam}`,
-    `dimension=pe:${peParam}`,
-    `dimension=ou:${ouParam}`,
-    'displayProperty=NAME',
-    'hierarchyMeta=true',
+    `dimension=dx:${dataElements.join(';')}`,
+    `dimension=pe:${periods.join(';')}`,
   ];
+
+  if (orgUnits.length > 0) {
+    params.push(`dimension=ou:${orgUnits.join(';')}`);
+  }
+
+  if (displayProperty) {
+    params.push(`displayProperty=${displayProperty}`);
+  }
+
+  if (skipMeta) {
+    params.push('skipMeta=true');
+  }
 
   const queryString = params.join('&');
 
-  return `-- DHIS2 Analytics Query
--- Data Elements: ${dataElements.join(', ')}
--- Periods: ${periods.join(', ')}
--- Org Units: ${orgUnits.join(', ')}
--- 
--- This query will be executed against the DHIS2 analytics endpoint
--- The comment parameters above will be parsed by the DHIS2 dialect
-
--- Generated DHIS2 Analytics API query:
--- GET /api/analytics?${queryString}
-
-SELECT * FROM analytics
--- WHERE the query parameters defined above are applied by the backend
+  return `-- DHIS2: ${queryString}
+SELECT * FROM ${endpoint}
 `;
 }

@@ -49,11 +49,12 @@ const StyledSidebar = styled.div<{
 }>`
   width: ${({ $width }) => $width}px;
   min-height: calc(100vh - ${({ $navbarHeight }) => $navbarHeight}px);
-  background: ${({ $backgroundColor }) => $backgroundColor};
+  background: ${({ $backgroundColor }) =>
+    `var(--public-page-sidebar-background, ${$backgroundColor})`};
   ${({ $position, $borderStyle }) =>
     $position === 'left'
-      ? `border-right: ${$borderStyle};`
-      : `border-left: ${$borderStyle};`}
+      ? `border-right: var(--public-page-sidebar-border, ${$borderStyle});`
+      : `border-left: var(--public-page-sidebar-border, ${$borderStyle});`}
   position: fixed;
   ${({ $position }) => ($position === 'left' ? 'left: 0;' : 'right: 0;')}
   top: ${({ $navbarHeight }) => $navbarHeight}px;
@@ -80,18 +81,18 @@ const StyledMenu = styled(Menu)`
       margin: 0;
       display: flex;
       align-items: center;
-      color: ${theme.colorText};
+      color: var(--public-page-text-color, ${theme.colorText});
       font-size: 14px;
       border-radius: 0;
 
       &:hover {
-        background: ${theme.colorBgLayout};
-        color: ${theme.colorPrimary};
+        background: var(--public-page-hover-bg, ${theme.colorBgLayout});
+        color: var(--public-page-primary-color, ${theme.colorPrimary});
       }
 
       &.ant-menu-item-selected {
-        background: ${theme.colorPrimaryBg};
-        color: ${theme.colorPrimary};
+        background: var(--public-page-primary-bg, ${theme.colorPrimaryBg});
+        color: var(--public-page-primary-color, ${theme.colorPrimary});
         font-weight: 600;
       }
 
@@ -104,7 +105,7 @@ const StyledMenu = styled(Menu)`
 
     .ant-menu-item-divider {
       margin: ${theme.sizeUnit}px 0;
-      background: ${theme.colorBorderSecondary};
+      background: var(--public-page-border-color, ${theme.colorBorderSecondary});
     }
   `}
 `;
@@ -116,7 +117,7 @@ const SidebarTitle = styled.div`
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: ${theme.colorTextSecondary};
+    color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
   `}
 `;
 
@@ -126,6 +127,12 @@ const LoadingContainer = styled.div`
     justify-content: center;
     align-items: center;
     padding: ${theme.sizeUnit * 8}px;
+  `}
+`;
+
+const EmptyMessage = styled.span`
+  ${({ theme }) => `
+    color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
   `}
 `;
 
@@ -190,7 +197,7 @@ export default function ConfigurableSidebar({
         </LoadingContainer>
       ) : dashboards.length === 0 ? (
         <LoadingContainer>
-          <span style={{ color: '#999' }}>{t('No dashboards available')}</span>
+          <EmptyMessage>{t('No dashboards available')}</EmptyMessage>
         </LoadingContainer>
       ) : (
         <StyledMenu
