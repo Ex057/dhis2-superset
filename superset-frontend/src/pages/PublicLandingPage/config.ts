@@ -157,7 +157,7 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     },
     title: {
       enabled: true,
-      text: 'Data Dashboard',
+      text: 'Malaria Repository Analytics',
       fontSize: '18px',
       fontWeight: 700,
       color: '#1890ff',

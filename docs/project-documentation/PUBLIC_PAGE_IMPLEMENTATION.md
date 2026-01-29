@@ -138,7 +138,7 @@ PUBLIC_PAGE_CONFIG = {
         },
         "title": {
             "enabled": True,
-            "text": "Data Dashboard",
+            "text": "Malaria Repository Analytics",
             "fontSize": "18px",
             "fontWeight": 700,
             "color": "#1890ff",
