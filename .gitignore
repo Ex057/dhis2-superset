@@ -52,7 +52,6 @@ venv*
 env_py3
 envpy3
 local_config.py
-/superset_config.py
 /superset_text.yml
 superset.egg-info/
 superset/bin/supersetc
@@ -138,6 +137,8 @@ PROJECT.md
 # Temporary documentation files
 TODO.md
 CHART_TAGGING_GUIDE.md
+DHIS2_FILTER_NAME_TO_UID_SOLUTION.md
+docs/project-documentation/
 
 # Planning and progress tracking documents
 ACTION_PLAN.md
@@ -164,5 +165,3 @@ superset_home/dhis2_cache/*.meta
 
 # Log files
 logs/*.log
-
-
