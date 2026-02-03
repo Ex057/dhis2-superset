@@ -307,6 +307,9 @@ export default function PublicLandingPage({
         '--public-page-sidebar-background': isDarkMode
           ? '#0f2238'
           : sidebar.backgroundColor,
+        '--public-page-sidebar-text-color': isDarkMode
+          ? '#e6edf3'
+          : sidebar.textColor || theme.colorText,
         '--public-page-sidebar-border': isDarkMode
           ? '1px solid #1f3a57'
           : sidebar.borderStyle,

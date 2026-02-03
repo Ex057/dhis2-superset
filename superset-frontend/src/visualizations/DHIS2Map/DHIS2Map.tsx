@@ -218,7 +218,7 @@ function MapAutoFocus({
           // Fit bounds with padding - ensure all features are visible
           // Use higher maxZoom for smaller areas, lower for larger areas
           const maxZoomLevel =
-            boundsSize < 50000 ? 13 : boundsSize < 200000 ? 11 : 9;
+            boundsSize < 50000 ? 13 : boundsSize < 200000 ? 12 : 10;
 
           // eslint-disable-next-line no-console
           console.log(
@@ -226,7 +226,7 @@ function MapAutoFocus({
           );
 
           map.fitBounds(bounds, {
-            padding: [70, 70], // Extra padding to keep full boundary set visible
+            padding: [30, 30], // Tighter padding for a clearer initial fit
             maxZoom: maxZoomLevel,
             animate: true,
             duration: 0.5,
@@ -1814,8 +1814,8 @@ function DHIS2Map({
     <MapWrapper style={{ width, height }}>
       {/* @ts-ignore - React 19 compatibility */}
       <MapContainer
-        center={[0, 32]}
-        zoom={6}
+        center={[1.3733, 32.2903]}
+        zoom={7}
         zoomControl={false}
         ref={(mapRef: any) => mapRef && setMapInstance(mapRef)}
       >

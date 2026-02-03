@@ -81,7 +81,7 @@ const StyledMenu = styled(Menu)`
       margin: 0;
       display: flex;
       align-items: center;
-      color: var(--public-page-text-color, ${theme.colorText});
+      color: var(--public-page-sidebar-text-color, ${theme.colorText});
       font-size: 14px;
       border-radius: 0;
 
@@ -117,7 +117,7 @@ const SidebarTitle = styled.div`
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
+    color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
   `}
 `;
 
@@ -132,7 +132,7 @@ const LoadingContainer = styled.div`
 
 const EmptyMessage = styled.span`
   ${({ theme }) => `
-    color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
+    color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
   `}
 `;
 

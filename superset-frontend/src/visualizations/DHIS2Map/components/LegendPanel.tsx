@@ -193,10 +193,6 @@ function LegendPanel({
   const getLevelName = (level: number): string =>
     LEVEL_NAMES[level] || `Level ${level}`;
 
-  if (currentMode === 'hidden') {
-    return null;
-  }
-
   if (currentMode === 'compact') {
     return (
       <LegendContainer
@@ -234,12 +230,6 @@ function LegendPanel({
             title={t('Compact')}
           >
             ▲
-          </ModeButton>
-          <ModeButton
-            onClick={() => handleModeChange('hidden')}
-            title={t('Hide')}
-          >
-            ✕
           </ModeButton>
         </div>
       </LegendHeader>

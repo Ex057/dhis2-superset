@@ -89,6 +89,8 @@ export interface PublicPageSidebarConfig {
   position: 'left' | 'right';
   /** Background color */
   backgroundColor: string;
+  /** Sidebar text color */
+  textColor?: string;
   /** Border style */
   borderStyle: string;
   /** Title to display above dashboard list */
@@ -175,6 +177,7 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     width: 280,
     position: 'left',
     backgroundColor: '#ffffff',
+    textColor: '#1f1f1f',
     borderStyle: '1px solid #f0f0f0',
     title: 'Categories',
     collapsibleOnMobile: true,
