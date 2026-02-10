@@ -251,6 +251,54 @@ class QueryContextProcessor:
         """
         datasource = self._qc_datasource
         extra_cache_keys = datasource.get_extra_cache_keys(query_obj.to_dict())
+        # DHIS2: include Period/WHERE in cache keys to avoid stale period results
+        try:
+            if getattr(datasource.database.db_engine_spec, "engine", None) == "dhis2":
+                period_filters = []
+                for flt in query_obj.filter or []:
+                    col = flt.get("col") or flt.get("column")
+                    if isinstance(col, dict):
+                        col = (
+                            col.get("column_name")
+                            or col.get("name")
+                            or col.get("label")
+                        )
+                    if str(col).lower() == "period":
+                        val = flt.get("val")
+                        if val is not None:
+                            period_filters.append(val)
+                if period_filters:
+                    extra_cache_keys.append(("dhis2_period", period_filters))
+                where_clause = (query_obj.extras or {}).get("where")
+                if where_clause:
+                    extra_cache_keys.append(("dhis2_where", where_clause))
+                # Include cascade parent info for filter option requests
+                try:
+                    from flask import g
+
+                    cascade_parent_column = getattr(g, "dhis2_cascade_parent_column", None)
+                    cascade_parent_value = getattr(g, "dhis2_cascade_parent_value", None)
+                    if cascade_parent_column and cascade_parent_value is not None:
+                        import json as _json
+
+                        extra_cache_keys.append(
+                            (
+                                "dhis2_cascade_parent",
+                                _json.dumps(
+                                    {
+                                        "col": cascade_parent_column,
+                                        "val": cascade_parent_value,
+                                    },
+                                    sort_keys=True,
+                                    default=str,
+                                ),
+                            )
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            # Best-effort only; don't block cache key generation
+            pass
 
         cache_key = (
             query_obj.cache_key(

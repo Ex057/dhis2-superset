@@ -150,8 +150,20 @@ class DatasourceRestApi(BaseSupersetApi):
             print(f"[Cascade API] ✅ CASCADE ENABLED: parent={cascade_parent_column}, values={parent_values}")
             g.dhis2_cascade_parent_column = cascade_parent_column
             g.dhis2_cascade_parent_value = parent_values
+            g.dhis2_cascade_child_column = column_name
+            logger.info(
+                "[Cascade API] child_column=%s",
+                column_name,
+            )
+            print(f"[Cascade API] child_column={column_name}")
         else:
             print(f"[Cascade API] ❌ NO CASCADE: parent_column={cascade_parent_column}, parent_values={parent_values}")
+
+        # Mark filter option requests for DHIS2 dialect handling
+        try:
+            g.dhis2_is_native_filter = True
+        except Exception:
+            pass
 
         try:
             payload = datasource.values_for_column(
@@ -161,6 +173,26 @@ class DatasourceRestApi(BaseSupersetApi):
                 cascade_parent_column=cascade_parent_column,
                 cascade_parent_value=parent_values,
             )
+            # Fallback for DHIS2 Period filter options
+            try:
+                if (
+                    (not payload)
+                    and column_name
+                    and column_name.lower() in ("period", "pe")
+                    and hasattr(datasource, "database")
+                    and datasource.database
+                ):
+                    uri = getattr(datasource.database, "sqlalchemy_uri_decrypted", None) or getattr(
+                        datasource.database, "sqlalchemy_uri", ""
+                    )
+                    if "dhis2://" in str(uri):
+                        from datetime import datetime
+
+                        current_year = datetime.utcnow().year
+                        payload = [str(y) for y in range(current_year - 4, current_year + 1)]
+                        print(f"[Cascade API] Period fallback -> {payload}")
+            except Exception:
+                pass
             return self.response(200, result=payload)
         except KeyError:
             return self.response(

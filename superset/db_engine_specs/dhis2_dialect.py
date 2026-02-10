@@ -2401,25 +2401,65 @@ class DHIS2Cursor:
         select_match = re.search(r'SELECT\s+(.+?)\s+FROM', query, re.IGNORECASE | re.DOTALL)
         if not select_match:
             return []
-        
+
         select_clause = select_match.group(1).strip()
-        
+
         # Split by comma and clean up
         columns = []
         for col in select_clause.split(','):
-            col = col.strip()
+            raw_col = col.strip()
+            # Skip aggregate/function expressions entirely (including aliased ones)
+            if '(' in raw_col:
+                continue
+            col = raw_col
             # Handle aliases: "column AS alias" -> use "alias"
             if ' AS ' in col.upper():
                 col = col.split()[-1]
-            # Handle function calls: "FUNC(column)" -> skip
-            if '(' in col:
-                continue
             # Clean quotes if any
             col = col.strip('"\'`')
             if col and col != '*':
                 columns.append(col)
         
         return columns
+
+    def _normalize_level_key(self, column_name: str) -> str:
+        if not column_name:
+            return ""
+        key = re.sub(r"[^a-z0-9]+", "_", column_name.lower()).strip("_")
+        return key
+
+    def _infer_org_unit_level_from_column(self, column_name: str) -> int | None:
+        """
+        Infer DHIS2 org unit level from a column name.
+
+        Examples:
+        - Region -> 2
+        - District -> 3
+        - SubCounty / Sub_County_Town_Council_Div -> 4
+        - Health_Facility / Facility -> 5
+        - Level_3_Name -> 3
+        """
+        key = self._normalize_level_key(column_name)
+        if not key:
+            return None
+
+        level_match = re.search(r"level[_-]?(\\d+)", key)
+        if level_match:
+            try:
+                return int(level_match.group(1))
+            except ValueError:
+                return None
+
+        if "region" in key:
+            return 2
+        if "district" in key:
+            return 3
+        if "subcounty" in key or "sub_county" in key:
+            return 4
+        if "health_facility" in key or "healthfacility" in key or "facility" in key:
+            return 5
+
+        return None
 
     def _map_columns_to_dhis2_dimensions(self, columns: list[str], query: str) -> list[str]:
         """
@@ -3545,6 +3585,110 @@ class DHIS2Cursor:
         print(f"[DHIS2] Query params: {query_params}")
         logger.info(f"Query params: {query_params}")
 
+        # Map Period filter to DHIS2 pe parameter (override relative periods if provided)
+        try:
+            period_value = None
+            if "Period" in query_params and query_params["Period"]:
+                period_value = query_params.get("Period")
+                query_params.pop("Period", None)
+            elif "period" in query_params and query_params["period"]:
+                period_value = query_params.get("period")
+                query_params.pop("period", None)
+
+            if period_value is not None:
+                if isinstance(period_value, list):
+                    period_value = ";".join([str(v) for v in period_value])
+                else:
+                    period_value = str(period_value)
+                # Override pe with explicit periods
+                query_params["pe"] = period_value
+                logger.info(f"[DHIS2] Overriding pe with explicit Period filter: {period_value}")
+        except Exception as e:
+            logger.debug(f"[DHIS2] Period mapping skipped: {e}")
+
+        # Handle filter option requests driven by WHERE clause filters
+        # Example: SELECT "District" ... WHERE "Region" IN ('Bunyoro')
+        try:
+            is_native_filter = False
+            try:
+                from flask import g as flask_g
+                is_native_filter = bool(getattr(flask_g, "dhis2_is_native_filter", False))
+            except Exception:
+                pass
+
+            if not is_native_filter:
+                raise RuntimeError("not_filter_request")
+
+            select_columns = self._extract_select_columns(query)
+            if any("period" in (c or "").lower() for c in select_columns) or re.search(
+                r"\\bperiod\\b", query, re.IGNORECASE
+            ):
+                print(f"[DHIS2 Period] select_columns={select_columns}")
+                logger.info("[DHIS2 Period] select_columns=%s", select_columns)
+
+            # Choose a dimension-like column (org unit level or Period) from the SELECT list
+            child_column = None
+            for col in select_columns:
+                if self._infer_org_unit_level_from_column(col or "") is not None:
+                    child_column = col
+                    break
+                if col and col.lower() in ("period", "pe"):
+                    child_column = col
+                    break
+            if not child_column:
+                raise RuntimeError("no_dimension_select")
+
+            child_level = self._infer_org_unit_level_from_column(child_column or "")
+
+            # Period filter expansion for relative periods
+            if child_column and child_column.lower() in ("period", "pe"):
+                relative_pe = query_params.get("pe")
+                if not relative_pe:
+                    dimension_param = query_params.get("dimension")
+                    if isinstance(dimension_param, str) and "pe:" in dimension_param:
+                        values = self._extract_dimension_values(dimension_param, "pe")
+                        if values:
+                            relative_pe = values[0]
+                if not relative_pe:
+                    print(f"[DHIS2 Period] No relative pe found. Defaulting to LAST_5_YEARS. query_params={query_params}")
+                    relative_pe = "LAST_5_YEARS"
+                if relative_pe == "LAST_5_YEARS":
+                    current_year = datetime.utcnow().year
+                    years = [str(y) for y in range(current_year - 4, current_year + 1)]
+                    self._rows = [(y,) for y in years]
+                    self.rowcount = len(self._rows)
+                    self._set_description([child_column])
+                    print(f"[DHIS2 Period] Expanded {relative_pe} -> {years}")
+                    return
+
+            ou_name_filters = query_params.get("ou_name_filters") or []
+            if child_level and ou_name_filters:
+                logger.info(
+                    "[DHIS2 Cascade] WHERE-driven options: child_column=%s child_level=%s parents=%s",
+                    child_column,
+                    child_level,
+                    ou_name_filters,
+                )
+                print(
+                    f"[DHIS2 Cascade] WHERE-driven options: child_column={child_column} "
+                    f"child_level={child_level} parents={ou_name_filters}"
+                )
+
+                child_org_units = self.connection.fetch_child_org_units(
+                    ou_name_filters, child_level
+                )
+                if child_org_units:
+                    self._rows = [(ou.get("displayName"),) for ou in child_org_units]
+                    self.rowcount = len(self._rows)
+                    # Ensure cursor description is set for fetchall consumers
+                    self._set_description([child_column or "OrgUnit"])
+                    print(
+                        f"[DHIS2 Cascade] ✅ Returning {self.rowcount} WHERE-driven options"
+                    )
+                    return
+        except Exception as e:
+            logger.debug(f"[DHIS2 Cascade] WHERE-driven options skipped: {e}")
+
         # NEW: Handle cascading filter requests
         # Check if Flask g object contains cascade parent parameters (set by datasource API)
         try:
@@ -3553,28 +3697,79 @@ class DHIS2Cursor:
             # Check if cascade parameters were stored in Flask g by the datasource API
             cascade_parent_column = getattr(flask_g, 'dhis2_cascade_parent_column', None)
             cascade_parent_value = getattr(flask_g, 'dhis2_cascade_parent_value', None)
+            cascade_child_column = getattr(flask_g, 'dhis2_cascade_child_column', None)
+            cascade_child_level = getattr(flask_g, 'dhis2_cascade_child_level', None)
 
             if cascade_parent_column and cascade_parent_value:
-                logger.info(f"[DHIS2 Cascade] Detected cascade request: parent_column={cascade_parent_column}, parent_value={cascade_parent_value}")
-                print(f"[DHIS2 Cascade] 🔗 Cascade filter detected: {cascade_parent_column} = {cascade_parent_value}")
+                print(
+                    f"[DHIS2 Cascade] Detected cascade request: parent_column={cascade_parent_column}, "
+                    f"parent_value={cascade_parent_value}, child_column={cascade_child_column}, "
+                    f"child_level={cascade_child_level}"
+                )
+                logger.info(
+                    "[DHIS2 Cascade] Detected cascade request: parent_column=%s, parent_value=%s, child_column=%s, child_level=%s",
+                    cascade_parent_column,
+                    cascade_parent_value,
+                    cascade_child_column,
+                    cascade_child_level,
+                )
+                print(
+                    f"[DHIS2 Cascade] 🔗 Cascade filter detected: {cascade_parent_column} = {cascade_parent_value} (child={cascade_child_column}, level={cascade_child_level})"
+                )
 
-                # Parse parent values (may be list or comma-separated string)
+                # Parse parent values (may be list, list of dicts, or comma-separated string)
                 if isinstance(cascade_parent_value, list):
-                    parent_values = cascade_parent_value
+                    parent_values = []
+                    for v in cascade_parent_value:
+                        if isinstance(v, dict):
+                            val = v.get("value") or v.get("label")
+                            if val is not None:
+                                parent_values.append(val)
+                        else:
+                            parent_values.append(v)
                 else:
-                    parent_values = [v.strip() for v in str(cascade_parent_value).split(',') if v.strip()]
+                    parent_values = [
+                        v.strip()
+                        for v in str(cascade_parent_value).split(",")
+                        if v.strip()
+                    ]
 
-                # Determine child level from query context
-                # Look for column name in SELECT to infer level
-                child_level = None
-                if 'District' in query or 'district' in query.lower():
-                    child_level = 3  # District level
-                elif 'Sub_County' in query or 'subcounty' in query.lower() or 'Sub_County_Town_Council_Div' in query:
-                    child_level = 4  # Sub-County level
-                elif 'Health_Facility' in query or 'facility' in query.lower():
-                    child_level = 5  # Health Facility level
+                # Determine child level explicitly from cascade metadata
+                child_level = cascade_child_level
+                if child_level is None and cascade_child_column:
+                    child_level = self._infer_org_unit_level_from_column(cascade_child_column)
+                    print(
+                        f"[DHIS2 Cascade] Inferred child_level={child_level} from child_column={cascade_child_column}"
+                    )
+                    logger.info(
+                        "[DHIS2 Cascade] Inferred child_level=%s from child_column=%s",
+                        child_level,
+                        cascade_child_column,
+                    )
+
+                # Fallback to query inspection if no metadata is available
+                if child_level is None:
+                    if 'District' in query or 'district' in query.lower():
+                        child_level = 3  # District level
+                    elif 'Sub_County' in query or 'subcounty' in query.lower() or 'Sub_County_Town_Council_Div' in query:
+                        child_level = 4  # Sub-County level
+                    elif 'Health_Facility' in query or 'facility' in query.lower():
+                        child_level = 5  # Health Facility level
+                    print(f"[DHIS2 Cascade] Fallback query-based child_level={child_level}")
+                    logger.info(
+                        "[DHIS2 Cascade] Fallback query-based child_level=%s",
+                        child_level,
+                    )
 
                 # Fetch child org units based on parent selection
+                logger.info(
+                    "[DHIS2 Cascade] Fetching children for parent_values=%s child_level=%s",
+                    parent_values,
+                    child_level,
+                )
+                print(
+                    f"[DHIS2 Cascade] Fetching children for parent_values={parent_values} child_level={child_level}"
+                )
                 child_org_units = self.connection.fetch_child_org_units(parent_values, child_level)
 
                 if child_org_units:
@@ -3586,12 +3781,18 @@ class DHIS2Cursor:
                     # Store results directly - format as (displayName,) tuples for Superset
                     self._rows = [(ou.get('displayName'),) for ou in child_org_units]
                     self.rowcount = len(self._rows)
+                    # Ensure cursor description is set for fetchall consumers
+                    self._set_description([cascade_child_column or "OrgUnit"])
 
                     # Clear cascade parameters from Flask g
                     if hasattr(flask_g, 'dhis2_cascade_parent_column'):
                         delattr(flask_g, 'dhis2_cascade_parent_column')
                     if hasattr(flask_g, 'dhis2_cascade_parent_value'):
                         delattr(flask_g, 'dhis2_cascade_parent_value')
+                    if hasattr(flask_g, 'dhis2_cascade_child_column'):
+                        delattr(flask_g, 'dhis2_cascade_child_column')
+                    if hasattr(flask_g, 'dhis2_cascade_child_level'):
+                        delattr(flask_g, 'dhis2_cascade_child_level')
 
                     return
 

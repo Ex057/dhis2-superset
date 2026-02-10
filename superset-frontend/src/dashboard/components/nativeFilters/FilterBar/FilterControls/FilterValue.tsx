@@ -151,13 +151,15 @@ const FilterValue: FC<FilterControlProps> = ({
   }, [inView, inViewFirstTime, setInViewFirstTime]);
 
   const getCascadeParentInfo = useCallback(() => {
-    if (!cascadeParentId) {
+    const resolvedCascadeParentId =
+      cascadeParentId || filter?.cascadeParentIds?.[0];
+    if (!resolvedCascadeParentId) {
       return {
         cascade_parent_column: undefined,
         cascade_parent_value: undefined,
       };
     }
-    const parentFilter = allFilters?.[cascadeParentId];
+    const parentFilter = allFilters?.[resolvedCascadeParentId];
     if (!parentFilter) {
       return {
         cascade_parent_column: undefined,
@@ -166,13 +168,22 @@ const FilterValue: FC<FilterControlProps> = ({
     }
     const parentTarget = parentFilter.targets?.[0];
     const parentColumn = parentTarget?.column?.name;
-    const parentSelectedValue =
-      dataMaskSelected?.[cascadeParentId]?.filterState?.value;
+    const parentDataMask = dataMaskSelected?.[resolvedCascadeParentId];
+    const parentSelectedValue = parentDataMask?.filterState?.value;
+    const isEmptyParentValue =
+      parentSelectedValue == null ||
+      (Array.isArray(parentSelectedValue) && parentSelectedValue.length === 0);
+    if (isEmptyParentValue) {
+      return {
+        cascade_parent_column: undefined,
+        cascade_parent_value: undefined,
+      };
+    }
     return {
       cascade_parent_column: parentColumn,
       cascade_parent_value: parentSelectedValue,
     };
-  }, [cascadeParentId, allFilters, dataMaskSelected]);
+  }, [cascadeParentId, filter?.cascadeParentIds, allFilters, dataMaskSelected]);
 
   useEffect(() => {
     if (!inViewFirstTime) {
@@ -193,27 +204,36 @@ const FilterValue: FC<FilterControlProps> = ({
     if (filter?.cascadeParentIds?.length) {
       // Prevent unnecessary backend requests by validating parent filter selections first
 
-      let selectedParentFilterValueCounts = 0;
-
+      let selectedParentFiltersWithValue = 0;
       filter?.cascadeParentIds?.forEach(pId => {
-        const extraFormData = dataMaskSelected?.[pId]?.extraFormData;
-        if (extraFormData?.filters?.length) {
-          selectedParentFilterValueCounts += extraFormData.filters.length;
-        } else if (extraFormData?.time_range) {
-          selectedParentFilterValueCounts += 1;
+        const parentMask = dataMaskSelected?.[pId];
+        const val = parentMask?.filterState?.value;
+        const hasValue =
+          val != null && (!Array.isArray(val) || val.length > 0);
+        if (hasValue) {
+          selectedParentFiltersWithValue += 1;
         }
       });
 
-      // check if all parent filters with defaults have a value selected
-
-      let depsCount = dependencies.filters?.length ?? 0;
-
-      if (dependencies?.time_range) {
-        depsCount += 1;
+      const depsCount = filter?.cascadeParentIds?.length ?? 0;
+      // For pure cascade relationships, require at least one parent value selected
+      if (!depsCount && selectedParentFiltersWithValue === 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[NativeFilter] skip fetch: cascade parent not selected',
+          filter.id,
+        );
+        return;
       }
-      if (selectedParentFilterValueCounts !== depsCount) {
+      if (selectedParentFiltersWithValue !== depsCount) {
         // child filter should not request backend until it
         // has all the required information from parent filters
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[NativeFilter] skip fetch: deps not met',
+          filter.id,
+          { selectedParentFiltersWithValue, depsCount, dependencies },
+        );
         return;
       }
     }
@@ -236,6 +256,13 @@ const FilterValue: FC<FilterControlProps> = ({
       if (!hasDataSource) {
         return;
       }
+      // eslint-disable-next-line no-console
+      console.warn('[NativeFilter] fetching options', filter.id, {
+        groupby,
+        datasetId,
+        cascadeParentInfo,
+        formData: newFormData,
+      });
       setIsRefreshing(true);
       getChartDataRequest({
         formData: newFormData,

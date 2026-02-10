@@ -279,10 +279,28 @@ export default function PluginFilterSelect(props: PluginFilterSelectProps) {
     [updateDataMask, formData.nativeFilterId, clearAllTrigger],
   );
 
+  const isPeriodColumn = useMemo(
+    () => col?.toLowerCase() === 'period' || col?.toLowerCase() === 'pe',
+    [col],
+  );
+  const effectiveData = useMemo(() => {
+    if (data.length > 0) {
+      return data;
+    }
+    if (!isPeriodColumn || !col) {
+      return data;
+    }
+    const currentYear = new Date().getFullYear();
+    const years = Array.from({ length: 5 }, (_, i) =>
+      String(currentYear - 4 + i),
+    );
+    return years.map(y => ({ [col]: y })) as typeof data;
+  }, [data, isPeriodColumn, col]);
+
   const placeholderText =
-    data.length === 0
+    effectiveData.length === 0
       ? t('No data')
-      : tn('%s option', '%s options', data.length, data.length);
+      : tn('%s option', '%s options', effectiveData.length, effectiveData.length);
 
   const formItemExtra = useMemo(() => {
     if (filterState.validateMessage) {
@@ -296,13 +314,13 @@ export default function PluginFilterSelect(props: PluginFilterSelectProps) {
   }, [filterState.validateMessage, filterState.validateStatus]);
 
   const uniqueOptions = useMemo(() => {
-    const allOptions = new Set([...data.map(el => el[col])]);
+    const allOptions = new Set([...effectiveData.map(el => el[col])]);
     return [...allOptions].map((value: string) => ({
       label: labelFormatter(value, datatype),
       value,
       isNewOption: false,
     }));
-  }, [data, datatype, col, labelFormatter]);
+  }, [effectiveData, datatype, col, labelFormatter]);
 
   const options = useMemo(() => {
     if (search && !multiSelect && !hasOption(search, uniqueOptions, true)) {
@@ -351,8 +369,8 @@ export default function PluginFilterSelect(props: PluginFilterSelectProps) {
     // Handle the default to first Value case
     if (defaultToFirstItem) {
       // Set to first item if defaultToFirstItem is true
-      const firstItem: SelectValue = data[0]
-        ? (groupby.map(col => data[0][col]) as string[])
+      const firstItem: SelectValue = effectiveData[0]
+        ? (groupby.map(col => effectiveData[0][col]) as string[])
         : null;
       if (firstItem?.[0] !== undefined) {
         updateDataMask(firstItem);

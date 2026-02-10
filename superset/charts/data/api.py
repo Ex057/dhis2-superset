@@ -233,6 +233,29 @@ class ChartDataRestApi(ChartRestApi):
         if json_body is None:
             return self.response_400(message=_("Request is not JSON"))
 
+        # Debug filter requests (native filter options should hit this endpoint)
+        try:
+            form_data_dbg = json_body.get("form_data") if isinstance(json_body, dict) else None
+            if isinstance(form_data_dbg, dict):
+                if (
+                    form_data_dbg.get("native_filter_id")
+                    or form_data_dbg.get("viz_type")
+                    or form_data_dbg.get("groupby")
+                    or form_data_dbg.get("columns")
+                ):
+                    print(
+                        "[ChartData Request] "
+                        f"viz_type={form_data_dbg.get('viz_type')} "
+                        f"native_filter_id={form_data_dbg.get('native_filter_id')} "
+                        f"groupby={form_data_dbg.get('groupby')} "
+                        f"columns={form_data_dbg.get('columns')} "
+                        f"metrics={form_data_dbg.get('metrics')} "
+                        f"datasource={form_data_dbg.get('datasource')} "
+                        f"dashboardId={form_data_dbg.get('dashboardId')}"
+                    )
+        except Exception:
+            pass
+
         try:
             query_context = self._create_query_context_from_form(json_body)
             command = ChartDataCommand(query_context)
@@ -511,6 +534,66 @@ class ChartDataRestApi(ChartRestApi):
         form_data: dict[str, Any] | None = None,
         datasource: BaseDatasource | Query | None = None,
     ) -> Response:
+        if form_data:
+            try:
+                is_filter_request = bool(
+                    form_data.get("native_filter_id")
+                    or str(form_data.get("viz_type", "")).startswith("filter")
+                    or form_data.get("type") == "NATIVE_FILTER"
+                )
+                if is_filter_request:
+                    print(
+                        "[Filter FormData] "
+                        f"id={form_data.get('native_filter_id')} "
+                        f"viz_type={form_data.get('viz_type')} "
+                        f"type={form_data.get('type')} "
+                        f"groupby={form_data.get('groupby')} "
+                        f"columns={form_data.get('columns')} "
+                        f"metrics={form_data.get('metrics')} "
+                        f"time_range={form_data.get('time_range')} "
+                        f"cascade_parent_column={form_data.get('cascade_parent_column')} "
+                        f"cascade_parent_value={form_data.get('cascade_parent_value')}"
+                    )
+                    g.dhis2_is_native_filter = True
+            except Exception:
+                pass
+            cascade_parent_column = form_data.get("cascade_parent_column")
+            cascade_parent_value = form_data.get("cascade_parent_value")
+            if cascade_parent_column and cascade_parent_value is not None:
+                try:
+                    from flask import g
+                    import logging
+
+                    logger = logging.getLogger(__name__)
+
+                    g.dhis2_cascade_parent_column = cascade_parent_column
+                    g.dhis2_cascade_parent_value = cascade_parent_value
+
+                    groupby = form_data.get("groupby")
+                    if isinstance(groupby, list) and groupby:
+                        child_col = groupby[0]
+                        if isinstance(child_col, dict):
+                            child_col = (
+                                child_col.get("label")
+                                or child_col.get("column_name")
+                                or child_col.get("name")
+                            )
+                        if isinstance(child_col, str) and child_col:
+                            g.dhis2_cascade_child_column = child_col
+                    print(
+                        f"[Cascade ChartData] parent_column={cascade_parent_column} "
+                        f"parent_value={cascade_parent_value} "
+                        f"child_column={getattr(g, 'dhis2_cascade_child_column', None)}"
+                    )
+                    logger.info(
+                        "[Cascade ChartData] parent_column=%s parent_value=%s child_column=%s",
+                        cascade_parent_column,
+                        cascade_parent_value,
+                        getattr(g, "dhis2_cascade_child_column", None),
+                    )
+                except Exception:
+                    # Fail open: cascade context is optional
+                    pass
         try:
             result = command.run(force_cached=force_cached)
         except ChartDataCacheLoadError as exc:
