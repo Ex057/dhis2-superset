@@ -2714,6 +2714,7 @@ class DHIS2Cursor:
         # This extracts org unit filters that should OVERRIDE base params from SQL comments
         where_ou_filters = []
         where_ou_level = None
+        where_ou_pairs: list[tuple[str, int | None]] = []
         where_match = re.search(r'WHERE\s+(.+?)(?:ORDER BY|GROUP BY|LIMIT|$)', query, re.IGNORECASE | re.DOTALL)
         if where_match:
             conditions = where_match.group(1)
@@ -2737,9 +2738,11 @@ class DHIS2Cursor:
                 field = match.group(1) or match.group(2)  # Get whichever group matched
                 value = match.group(3)
                 if field in org_unit_columns:
+                    level = level_mapping.get(field)
                     where_ou_filters.append(value)
-                    if field in level_mapping:
-                        where_ou_level = level_mapping[field]
+                    where_ou_pairs.append((value, level))
+                    if level is not None:
+                        where_ou_level = level
                     logger.info(f"[DHIS2 Filter Detection] Detected org unit filter: {field} = {value}")
                 else:
                     if field not in params:  # Don't override existing params
@@ -2751,9 +2754,12 @@ class DHIS2Cursor:
                 values_str = match.group(3)
                 values = re.findall(r'[\'"]([^\'"]+)[\'"]', values_str)
                 if field in org_unit_columns:
+                    level = level_mapping.get(field)
                     where_ou_filters.extend(values)
-                    if field in level_mapping:
-                        where_ou_level = level_mapping[field]
+                    for v in values:
+                        where_ou_pairs.append((v, level))
+                    if level is not None:
+                        where_ou_level = level
                     logger.info(f"[DHIS2 Filter Detection] Detected org unit IN filter: {field} IN {values}")
                 else:
                     if field not in params:  # Don't override existing params
@@ -2775,6 +2781,14 @@ class DHIS2Cursor:
         # CRITICAL: If WHERE clause has org unit filters, they OVERRIDE the 'ou' parameter
         # This enables dashboard filters to work correctly
         if where_ou_filters:
+            # If multiple org unit levels are present, keep only the deepest level
+            if where_ou_pairs:
+                levels = [lvl for _, lvl in where_ou_pairs if lvl is not None]
+                if levels:
+                    max_level = max(levels)
+                    filtered = [val for val, lvl in where_ou_pairs if lvl == max_level]
+                    where_ou_filters = filtered
+                    where_ou_level = max_level
             final_params['ou_name_filters'] = where_ou_filters
             if where_ou_level:
                 final_params['ou_filter_level'] = where_ou_level
@@ -2977,6 +2991,28 @@ class DHIS2Cursor:
 
         # Handle org units (only if dimension doesn't already have ou:)
         has_ou_dimension = any(d.startswith("ou:") for d in dimension_parts)
+        # If ou is already in dimension but dataLevelScope is set, move ou out so
+        # we can apply LEVEL syntax (prevents NULLs for specific org unit levels).
+        if has_ou_dimension and params.get("dataLevelScope"):
+            ou_value = None
+            ou_extras: list[str] = []
+            kept_parts: list[str] = []
+            for part in dimension_parts:
+                if part.startswith("ou:") and ou_value is None:
+                    ou_value = part.split("ou:", 1)[1]
+                    continue
+                # Bare tokens (no prefix) should belong to ou list
+                if ":" not in part:
+                    ou_extras.append(part)
+                    continue
+                kept_parts.append(part)
+            if ou_value:
+                if ou_extras:
+                    ou_value = f"{ou_value};{';'.join(ou_extras)}"
+                dimension_parts = kept_parts
+                params["ou"] = ou_value
+                has_ou_dimension = False
+
         if not has_ou_dimension and "ou" in params and params["ou"]:
             ou_value = params["ou"]
             ou_mode = params.get("ouMode", "").upper()
@@ -3045,6 +3081,7 @@ class DHIS2Cursor:
                             if level_parts:
                                 # Combine org unit IDs with LEVEL syntax
                                 ou_value = f"{ou_value};{';'.join(level_parts)}"
+                                print(f"[DHIS2 Debug] ou_value with LEVELS: {ou_value}")
 
                     # Remove ouMode and dataLevelScope since we're using LEVEL syntax
                     params.pop("ouMode", None)
@@ -3060,6 +3097,7 @@ class DHIS2Cursor:
         if dimension_parts:
             params["dimension"] = ";".join(dimension_parts)
             logger.info(f"Final dimension parameter: {params['dimension']}")
+            print(f"[DHIS2 Debug] Final dimension: {params['dimension']}")
 
         # Handle dimension parameter specially - DHIS2 requires multiple dimension parameters
         # Format: dimension=dx:id1;id2;id3;pe:LAST_YEAR;ou:OrgUnit
@@ -3083,6 +3121,7 @@ class DHIS2Cursor:
             url = f"{url}?{'&'.join(query_params)}"
 
         print(f"[DHIS2] 🔄 CACHE MISS - API request URL: {url}")
+        print(f"[DHIS2 Debug] Request params: {params}")
         logger.info(f"DHIS2 API request (cache miss): {url}")
 
         try:
@@ -3584,6 +3623,26 @@ class DHIS2Cursor:
         query_params = self._extract_query_params(query)
         print(f"[DHIS2] Query params: {query_params}")
         logger.info(f"Query params: {query_params}")
+        try:
+            select_columns = self._extract_select_columns(query)
+            print(f"[DHIS2 Debug] SELECT columns: {select_columns}")
+        except Exception:
+            pass
+
+        # Avoid NULLs when chart groups by a specific org unit level (e.g., District)
+        # If no explicit dataLevelScope is set, constrain descendants to one level down
+        try:
+            if "dataLevelScope" not in query_params:
+                select_columns = self._extract_select_columns(query)
+                if any(
+                    (c or "").strip().lower() == "district" for c in select_columns
+                ):
+                    query_params["dataLevelScope"] = "children"
+                    logger.info(
+                        "[DHIS2] Setting dataLevelScope=children to avoid NULLs for District grouping"
+                    )
+        except Exception:
+            pass
 
         # Map Period filter to DHIS2 pe parameter (override relative periods if provided)
         try:
@@ -3871,6 +3930,10 @@ class DHIS2Cursor:
 
         # Merge all parameter sources
         api_params = self._merge_params(endpoint, query_params)
+        try:
+            print(f"[DHIS2 Debug] Pre-dimension params: {api_params}")
+        except Exception:
+            pass
         print(f"[DHIS2] Merged params: {api_params}")
         logger.info(f"Merged params: {api_params}")
 
