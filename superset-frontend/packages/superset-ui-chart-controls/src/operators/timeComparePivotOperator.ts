@@ -33,13 +33,14 @@ export const timeComparePivotOperator: PostProcessingFactory<
   const metricOffsetMap = getMetricOffsetsMap(formData, queryObject);
   const xAxisLabel = getXAxisLabel(formData);
   const columns = queryObject.series_columns || queryObject.columns;
+  const hasSeriesColumns = ensureIsArray(columns).length > 0;
+  const aggregateOperator: NumpyFunction = hasSeriesColumns ? 'mean' : 'sum';
 
   if (isTimeComparison(formData, queryObject) && xAxisLabel) {
     const aggregates = Object.fromEntries(
       [...metricOffsetMap.values(), ...metricOffsetMap.keys()].map(metric => [
         metric,
-        // use the 'mean' aggregates to avoid drop NaN
-        { operator: 'mean' as NumpyFunction },
+        { operator: aggregateOperator },
       ]),
     );
 

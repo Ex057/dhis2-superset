@@ -19,7 +19,7 @@
 
 import { useState, useEffect } from 'react';
 import { styled, SupersetClient, t } from '@superset-ui/core';
-import { Menu, Spin } from 'antd';
+import { Loading, Menu } from '@superset-ui/core/components';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { PublicPageSidebarConfig } from './config';
 
@@ -37,6 +37,7 @@ interface ConfigurableSidebarProps {
   navbarHeight: number;
   selectedKey?: string;
   onSelect?: (dashboard: Dashboard) => void;
+  layoutMode?: 'side' | 'top';
 }
 
 const StyledSidebar = styled.div<{
@@ -46,44 +47,78 @@ const StyledSidebar = styled.div<{
   $borderStyle: string;
   $navbarHeight: number;
   $mobileBreakpoint: number;
+  $layoutMode: 'side' | 'top';
 }>`
-  width: ${({ $width }) => $width}px;
-  min-height: calc(100vh - ${({ $navbarHeight }) => $navbarHeight}px);
-  background: ${({ $backgroundColor }) =>
-    `var(--public-page-sidebar-background, ${$backgroundColor})`};
-  ${({ $position, $borderStyle }) =>
-    $position === 'left'
-      ? `border-right: var(--public-page-sidebar-border, ${$borderStyle});`
-      : `border-left: var(--public-page-sidebar-border, ${$borderStyle});`}
-  position: fixed;
-  ${({ $position }) => ($position === 'left' ? 'left: 0;' : 'right: 0;')}
-  top: ${({ $navbarHeight }) => $navbarHeight}px;
-  z-index: 5;
-  overflow-y: auto;
+  ${({
+    $layoutMode,
+    $width,
+    $navbarHeight,
+    $backgroundColor,
+    $position,
+    $borderStyle,
+  }) =>
+    $layoutMode === 'top'
+      ? `
+        width: 100%;
+        min-height: auto;
+        background: var(--public-page-sidebar-background, ${$backgroundColor});
+        border-bottom: var(--public-page-sidebar-border, ${$borderStyle});
+        position: sticky;
+        top: ${$navbarHeight}px;
+        left: 0;
+        right: 0;
+        z-index: 4;
+        overflow-x: auto;
+        overflow-y: hidden;
+      `
+      : `
+        width: ${$width}px;
+        min-height: calc(100vh - ${$navbarHeight}px);
+        background: var(--public-page-sidebar-background, ${$backgroundColor});
+        ${
+          $position === 'left'
+            ? `border-right: var(--public-page-sidebar-border, ${$borderStyle});`
+            : `border-left: var(--public-page-sidebar-border, ${$borderStyle});`
+        }
+        position: fixed;
+        ${$position === 'left' ? 'left: 0;' : 'right: 0;'}
+        top: ${$navbarHeight}px;
+        z-index: 5;
+        overflow-y: auto;
+      `}
   transition: all 0.3s ease;
 
   @media (max-width: ${({ $mobileBreakpoint }) => $mobileBreakpoint}px) {
+    ${({ $layoutMode }) =>
+      $layoutMode === 'top'
+        ? `
+          position: static;
+          top: auto;
+        `
+        : `
     width: 0;
     overflow: hidden;
+        `}
   }
 `;
 
-const StyledMenu = styled(Menu)`
-  ${({ theme }) => `
+const StyledMenu = styled(Menu)<{ $layoutMode: 'side' | 'top' }>`
+  ${({ theme, $layoutMode }) => `
     background: transparent;
     border-right: none;
-    padding: ${theme.sizeUnit * 2}px 0;
+    padding: ${$layoutMode === 'top' ? `${theme.sizeUnit * 2}px` : `${theme.sizeUnit * 2}px 0`};
 
     .ant-menu-item {
       height: auto;
       line-height: 1.4;
       padding: ${theme.sizeUnit * 3}px ${theme.sizeUnit * 4}px !important;
-      margin: 0;
+      margin: 0 ${$layoutMode === 'top' ? `${theme.sizeUnit}px` : '0'};
       display: flex;
       align-items: center;
       color: var(--public-page-sidebar-text-color, ${theme.colorText});
       font-size: 14px;
-      border-radius: 0;
+      border-radius: ${$layoutMode === 'top' ? `${theme.borderRadius}px` : '0'};
+      white-space: nowrap;
 
       &:hover {
         background: var(--public-page-hover-bg, ${theme.colorBgLayout});
@@ -103,6 +138,16 @@ const StyledMenu = styled(Menu)`
       }
     }
 
+    &.ant-menu-horizontal {
+      border-bottom: none;
+      line-height: normal;
+      white-space: nowrap;
+    }
+
+    &.ant-menu-horizontal::after {
+      display: none;
+    }
+
     .ant-menu-item-divider {
       margin: ${theme.sizeUnit}px 0;
       background: var(--public-page-border-color, ${theme.colorBorderSecondary});
@@ -119,6 +164,10 @@ const SidebarTitle = styled.div`
     letter-spacing: 0.5px;
     color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
   `}
+`;
+
+const TopBarInner = styled.div`
+  min-width: max-content;
 `;
 
 const LoadingContainer = styled.div`
@@ -141,6 +190,7 @@ export default function ConfigurableSidebar({
   navbarHeight,
   selectedKey,
   onSelect,
+  layoutMode = 'side',
 }: ConfigurableSidebarProps) {
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,27 +239,58 @@ export default function ConfigurableSidebar({
       $borderStyle={config.borderStyle}
       $navbarHeight={navbarHeight}
       $mobileBreakpoint={config.mobileBreakpoint}
+      $layoutMode={layoutMode}
     >
-      <SidebarTitle>{t(config.title)}</SidebarTitle>
-      {loading ? (
-        <LoadingContainer>
-          <Spin />
-        </LoadingContainer>
-      ) : dashboards.length === 0 ? (
-        <LoadingContainer>
-          <EmptyMessage>{t('No dashboards available')}</EmptyMessage>
-        </LoadingContainer>
+      {layoutMode === 'top' ? (
+        <TopBarInner>
+          <SidebarTitle>{t(config.title)}</SidebarTitle>
+          {loading ? (
+            <LoadingContainer>
+              <Loading />
+            </LoadingContainer>
+          ) : dashboards.length === 0 ? (
+            <LoadingContainer>
+              <EmptyMessage>{t('No dashboards available')}</EmptyMessage>
+            </LoadingContainer>
+          ) : (
+            <StyledMenu
+              $layoutMode={layoutMode}
+              mode="horizontal"
+              selectedKeys={selectedKey ? [selectedKey] : []}
+              onClick={handleMenuClick}
+              items={dashboards.map(dashboard => ({
+                key: dashboard.id.toString(),
+                icon: <Icons.DashboardOutlined />,
+                label: dashboard.dashboard_title,
+              }))}
+            />
+          )}
+        </TopBarInner>
       ) : (
-        <StyledMenu
-          mode="inline"
-          selectedKeys={selectedKey ? [selectedKey] : []}
-          onClick={handleMenuClick}
-          items={dashboards.map(dashboard => ({
-            key: dashboard.id.toString(),
-            icon: <Icons.DashboardOutlined />,
-            label: dashboard.dashboard_title,
-          }))}
-        />
+        <>
+          <SidebarTitle>{t(config.title)}</SidebarTitle>
+          {loading ? (
+            <LoadingContainer>
+              <Loading />
+            </LoadingContainer>
+          ) : dashboards.length === 0 ? (
+            <LoadingContainer>
+              <EmptyMessage>{t('No dashboards available')}</EmptyMessage>
+            </LoadingContainer>
+          ) : (
+            <StyledMenu
+              $layoutMode={layoutMode}
+              mode="inline"
+              selectedKeys={selectedKey ? [selectedKey] : []}
+              onClick={handleMenuClick}
+              items={dashboards.map(dashboard => ({
+                key: dashboard.id.toString(),
+                icon: <Icons.DashboardOutlined />,
+                label: dashboard.dashboard_title,
+              }))}
+            />
+          )}
+        </>
       )}
     </StyledSidebar>
   );

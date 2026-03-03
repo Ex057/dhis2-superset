@@ -85,6 +85,9 @@ const useShouldFilterRefresh = () => {
   return !isDashboardRefreshing && isFilterRefreshing;
 };
 
+const hasSelectedValue = (value: unknown) =>
+  value != null && (!Array.isArray(value) || value.length > 0);
+
 const FilterValue: FC<FilterControlProps> = ({
   dataMaskSelected,
   filter,
@@ -150,9 +153,16 @@ const FilterValue: FC<FilterControlProps> = ({
     }
   }, [inView, inViewFirstTime, setInViewFirstTime]);
 
+  const resolvedCascadeParentId = useMemo(() => {
+    if (cascadeParentId) {
+      return cascadeParentId;
+    }
+
+    const parentIds = filter?.cascadeParentIds || [];
+    return parentIds.length ? parentIds[parentIds.length - 1] : undefined;
+  }, [cascadeParentId, filter?.cascadeParentIds]);
+
   const getCascadeParentInfo = useCallback(() => {
-    const resolvedCascadeParentId =
-      cascadeParentId || filter?.cascadeParentIds?.[0];
     if (!resolvedCascadeParentId) {
       return {
         cascade_parent_column: undefined,
@@ -183,7 +193,7 @@ const FilterValue: FC<FilterControlProps> = ({
       cascade_parent_column: parentColumn,
       cascade_parent_value: parentSelectedValue,
     };
-  }, [cascadeParentId, filter?.cascadeParentIds, allFilters, dataMaskSelected]);
+  }, [resolvedCascadeParentId, allFilters, dataMaskSelected]);
 
   useEffect(() => {
     if (!inViewFirstTime) {
@@ -201,39 +211,33 @@ const FilterValue: FC<FilterControlProps> = ({
       ...cascadeParentInfo,
     });
     const filterOwnState = filter.dataMask?.ownState || {};
-    if (filter?.cascadeParentIds?.length) {
-      // Prevent unnecessary backend requests by validating parent filter selections first
+    if (resolvedCascadeParentId) {
+      const parentValue =
+        dataMaskSelected?.[resolvedCascadeParentId]?.filterState?.value;
 
-      let selectedParentFiltersWithValue = 0;
-      filter?.cascadeParentIds?.forEach(pId => {
-        const parentMask = dataMaskSelected?.[pId];
-        const val = parentMask?.filterState?.value;
-        const hasValue =
-          val != null && (!Array.isArray(val) || val.length > 0);
-        if (hasValue) {
-          selectedParentFiltersWithValue += 1;
-        }
-      });
-
-      const depsCount = filter?.cascadeParentIds?.length ?? 0;
-      // For pure cascade relationships, require at least one parent value selected
-      if (!depsCount && selectedParentFiltersWithValue === 0) {
+      if (!hasSelectedValue(parentValue)) {
         // eslint-disable-next-line no-console
         console.warn(
           '[NativeFilter] skip fetch: cascade parent not selected',
           filter.id,
+          { resolvedCascadeParentId },
         );
         return;
       }
+    } else if (filter?.cascadeParentIds?.length) {
+      const selectedParentFiltersWithValue = filter.cascadeParentIds.filter(
+        parentId =>
+          hasSelectedValue(dataMaskSelected?.[parentId]?.filterState?.value),
+      ).length;
+      const depsCount = filter.cascadeParentIds.length;
+
       if (selectedParentFiltersWithValue !== depsCount) {
-        // child filter should not request backend until it
-        // has all the required information from parent filters
         // eslint-disable-next-line no-console
-        console.warn(
-          '[NativeFilter] skip fetch: deps not met',
-          filter.id,
-          { selectedParentFiltersWithValue, depsCount, dependencies },
-        );
+        console.warn('[NativeFilter] skip fetch: deps not met', filter.id, {
+          selectedParentFiltersWithValue,
+          depsCount,
+          dependencies,
+        });
         return;
       }
     }
@@ -318,6 +322,7 @@ const FilterValue: FC<FilterControlProps> = ({
     shouldRefresh,
     dataMaskSelected,
     getCascadeParentInfo,
+    resolvedCascadeParentId,
   ]);
 
   useEffect(() => {

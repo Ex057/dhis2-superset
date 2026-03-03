@@ -68,7 +68,7 @@ export default function EmbeddedDashboard({
   useEffect(() => {
     if (!containerRef.current) {
       console.log('EmbeddedDashboard: containerRef not ready');
-      return;
+      return undefined;
     }
 
     console.log('EmbeddedDashboard: Starting to embed dashboard', dashboardId);
@@ -92,7 +92,7 @@ export default function EmbeddedDashboard({
           mountPoint: containerRef.current!,
           fetchGuestToken: () => fetchGuestToken(dashboardId),
           dashboardUiConfig: {
-            hideTitle: false,
+            hideTitle: true,
             hideChartControls: false,
             hideTab: false,
             filters: {
@@ -145,7 +145,9 @@ export default function EmbeddedDashboard({
   }, [dashboardId]);
 
   useEffect(() => {
-    if (!dashboardRef.current || Object.keys(filters).length === 0) return;
+    if (!dashboardRef.current || Object.keys(filters).length === 0) {
+      return undefined;
+    }
 
     const timeoutId = setTimeout(() => {
       Object.entries(filters).forEach(([filterId, value]) => {

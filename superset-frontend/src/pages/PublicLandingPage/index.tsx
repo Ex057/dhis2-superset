@@ -28,8 +28,11 @@ import { usePublicPageConfig } from './usePublicPageConfig';
 import { PublicPageLayoutConfig } from './config';
 
 type PublicPageTheme = 'light' | 'dark';
+type PublicPageSidebarLayout = 'side' | 'top';
 
 const PUBLIC_PAGE_THEME_STORAGE_KEY = 'superset.publicLandingPage.theme';
+const PUBLIC_PAGE_SIDEBAR_LAYOUT_STORAGE_KEY =
+  'superset.publicLandingPage.sidebarLayout';
 
 const getStoredTheme = (): PublicPageTheme => {
   if (typeof window === 'undefined') {
@@ -59,6 +62,40 @@ const storeThemePreference = (theme: PublicPageTheme) => {
     window.localStorage.setItem(PUBLIC_PAGE_THEME_STORAGE_KEY, theme);
   } catch (error) {
     console.warn('Unable to store public page theme preference', error);
+  }
+};
+
+const getStoredSidebarLayout = (): PublicPageSidebarLayout | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const storedLayout = window.localStorage.getItem(
+      PUBLIC_PAGE_SIDEBAR_LAYOUT_STORAGE_KEY,
+    );
+    if (storedLayout === 'side' || storedLayout === 'top') {
+      return storedLayout;
+    }
+  } catch (error) {
+    console.warn('Unable to read public page sidebar layout preference', error);
+  }
+
+  return null;
+};
+
+const storeSidebarLayoutPreference = (layout: PublicPageSidebarLayout) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(PUBLIC_PAGE_SIDEBAR_LAYOUT_STORAGE_KEY, layout);
+  } catch (error) {
+    console.warn(
+      'Unable to store public page sidebar layout preference',
+      error,
+    );
   }
 };
 
@@ -140,6 +177,7 @@ const ContentWrapper = styled.div<{
   $sidebarWidth: number;
   $sidebarPosition: string;
   $sidebarEnabled: boolean;
+  $sidebarLayout: PublicPageSidebarLayout;
   $backgroundColor: string;
   $padding: string;
   $mobileBreakpoint: number;
@@ -152,14 +190,18 @@ const ContentWrapper = styled.div<{
   background: ${({ $backgroundColor }) =>
     `var(--public-page-content-background, ${$backgroundColor})`};
 
-  ${({ $sidebarEnabled, $sidebarWidth, $sidebarPosition }) =>
+  ${({ $sidebarEnabled, $sidebarWidth, $sidebarPosition, $sidebarLayout }) =>
     $sidebarEnabled
-      ? $sidebarPosition === 'left'
+      ? $sidebarLayout === 'top'
         ? `
+          width: 100%;
+        `
+        : $sidebarPosition === 'left'
+          ? `
           margin-left: ${$sidebarWidth}px;
           width: calc(100% - ${$sidebarWidth}px);
         `
-        : `
+          : `
           margin-right: ${$sidebarWidth}px;
           width: calc(100% - ${$sidebarWidth}px);
         `
@@ -270,6 +312,9 @@ export default function PublicLandingPage({
     Dashboard | undefined
   >(undefined);
   const [themeMode, setThemeMode] = useState<PublicPageTheme>(getStoredTheme);
+  const [sidebarLayout, setSidebarLayout] = useState<PublicPageSidebarLayout>(
+    getStoredSidebarLayout() || 'side',
+  );
 
   // Merge override config if provided
   const config = overrideConfig
@@ -290,6 +335,10 @@ export default function PublicLandingPage({
   useEffect(() => {
     storeThemePreference(themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    storeSidebarLayoutPreference(sidebarLayout);
+  }, [sidebarLayout]);
 
   const themeVariables = useMemo<CSSProperties>(
     () =>
@@ -330,18 +379,14 @@ export default function PublicLandingPage({
         '--public-page-link-hover-color': isDarkMode
           ? '#74b3ff'
           : theme.colorPrimary,
-        '--public-page-hover-bg': isDarkMode
-          ? '#1b3553'
-          : theme.colorBgLayout,
+        '--public-page-hover-bg': isDarkMode ? '#1b3553' : theme.colorBgLayout,
         '--public-page-toggle-bg': isDarkMode
           ? '#15324f'
           : theme.colorBgContainer,
         '--public-page-toggle-border': isDarkMode
           ? '#2a4b6a'
           : theme.colorBorder,
-        '--public-page-toggle-color': isDarkMode
-          ? '#e6edf3'
-          : theme.colorText,
+        '--public-page-toggle-color': isDarkMode ? '#e6edf3' : theme.colorText,
       }) as CSSProperties,
     [
       content.backgroundColor,
@@ -372,6 +417,12 @@ export default function PublicLandingPage({
   const handleThemeToggle = () => {
     setThemeMode(previousTheme =>
       previousTheme === 'dark' ? 'light' : 'dark',
+    );
+  };
+
+  const handleSidebarLayoutToggle = () => {
+    setSidebarLayout(previousLayout =>
+      previousLayout === 'side' ? 'top' : 'side',
     );
   };
 
@@ -424,14 +475,41 @@ export default function PublicLandingPage({
             <ThemeToggleButton
               type="default"
               aria-label={
-                isDarkMode ? t('Switch to light mode') : t('Switch to dark mode')
+                isDarkMode
+                  ? t('Switch to light mode')
+                  : t('Switch to dark mode')
               }
               title={
-                isDarkMode ? t('Switch to light mode') : t('Switch to dark mode')
+                isDarkMode
+                  ? t('Switch to light mode')
+                  : t('Switch to dark mode')
               }
               icon={isDarkMode ? <Icons.SunOutlined /> : <Icons.MoonOutlined />}
               onClick={handleThemeToggle}
             />
+            {sidebar.enabled && (
+              <ThemeToggleButton
+                type="default"
+                aria-label={
+                  sidebarLayout === 'side'
+                    ? t('Move dashboard list to top')
+                    : t('Move dashboard list to side')
+                }
+                title={
+                  sidebarLayout === 'side'
+                    ? t('Move dashboard list to top')
+                    : t('Move dashboard list to side')
+                }
+                icon={
+                  sidebarLayout === 'side' ? (
+                    <Icons.VerticalAlignTopOutlined />
+                  ) : (
+                    <Icons.VerticalLeftOutlined />
+                  )
+                }
+                onClick={handleSidebarLayoutToggle}
+              />
+            )}
             {navbar.loginButton.enabled && (
               <Button type={navbar.loginButton.type} onClick={handleLogin}>
                 {t(navbar.loginButton.text)}
@@ -446,6 +524,7 @@ export default function PublicLandingPage({
         $sidebarWidth={sidebar.width}
         $sidebarPosition={sidebar.position}
         $sidebarEnabled={sidebar.enabled}
+        $sidebarLayout={sidebarLayout}
         $backgroundColor={content.backgroundColor}
         $padding={content.padding}
         $mobileBreakpoint={sidebar.mobileBreakpoint}
@@ -455,6 +534,7 @@ export default function PublicLandingPage({
           navbarHeight={navbar.enabled ? navbar.height : 0}
           selectedKey={selectedDashboard?.id.toString()}
           onSelect={handleDashboardSelect}
+          layoutMode={sidebarLayout}
         />
         {selectedDashboard ? (
           <DashboardContentArea

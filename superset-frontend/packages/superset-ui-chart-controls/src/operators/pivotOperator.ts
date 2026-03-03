@@ -36,6 +36,8 @@ export const pivotOperator: PostProcessingFactory<PostProcessingPivot> = (
   ].map(getMetricLabel);
   const xAxisLabel = getXAxisLabel(formData);
   const columns = queryObject.series_columns || queryObject.columns;
+  const hasSeriesColumns = ensureIsArray(columns).length > 0;
+  const aggregateOperator = hasSeriesColumns ? 'mean' : 'sum';
 
   if (xAxisLabel && metricLabels.length) {
     return {
@@ -43,10 +45,10 @@ export const pivotOperator: PostProcessingFactory<PostProcessingPivot> = (
       options: {
         index: [xAxisLabel],
         columns: ensureIsArray(columns).map(getColumnLabel),
-        // Create 'dummy' mean aggregates to assign cell values in pivot table
-        // use the 'mean' aggregates to avoid drop NaN. PR: https://github.com/apache-superset/superset-ui/pull/1231
+        // Use additive rollups when there are no series columns, otherwise keep
+        // the historical mean-based pivot behavior for cross-tab cells.
         aggregates: Object.fromEntries(
-          metricLabels.map(metric => [metric, { operator: 'mean' }]),
+          metricLabels.map(metric => [metric, { operator: aggregateOperator }]),
         ),
         drop_missing_columns: !formData?.show_empty_columns,
       },

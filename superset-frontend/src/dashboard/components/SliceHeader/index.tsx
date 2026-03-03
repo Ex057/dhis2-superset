@@ -29,7 +29,6 @@ import {
   getExtensionsRegistry,
   QueryData,
   styled,
-  SupersetTheme,
   t,
   useTheme,
 } from '@superset-ui/core';
@@ -42,10 +41,8 @@ import { SliceHeaderControlsProps } from 'src/dashboard/components/SliceHeaderCo
 import FiltersBadge from 'src/dashboard/components/FiltersBadge';
 import GroupByBadge from 'src/dashboard/components/GroupByBadge';
 import { RootState } from 'src/dashboard/types';
-import { getSliceHeaderTooltip } from 'src/dashboard/util/getSliceHeaderTooltip';
 import { DashboardPageIdContext } from 'src/dashboard/containers/DashboardPage';
 import RowCountLabel from 'src/components/RowCountLabel';
-import { Link } from 'react-router-dom';
 
 const extensionsRegistry = getExtensionsRegistry();
 
@@ -199,13 +196,9 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
     const rowLimit = Number(formData.row_limit || -1);
     const sqlRowCount = Number(firstQueryResponse?.sql_rowcount || 0);
 
-    const canExplore = !editMode && supersetCanExplore;
-
     useEffect(() => {
       const headerElement = headerRef.current;
-      if (canExplore) {
-        setHeaderTooltip(getSliceHeaderTooltip(sliceName));
-      } else if (
+      if (
         headerElement &&
         (headerElement.scrollWidth > headerElement.offsetWidth ||
           headerElement.scrollHeight > headerElement.offsetHeight)
@@ -214,25 +207,9 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
       } else {
         setHeaderTooltip(null);
       }
-    }, [sliceName, width, height, canExplore]);
+    }, [sliceName, width, height]);
 
     const exploreUrl = `/explore/?dashboard_page_id=${dashboardPageId}&slice_id=${slice.slice_id}`;
-
-    const renderExploreLink = (title: string) => (
-      <Link
-        to={exploreUrl}
-        css={(theme: SupersetTheme) => css`
-          color: ${theme.colorText};
-          text-decoration: none;
-          :hover {
-            text-decoration: underline;
-          }
-          display: inline-block;
-        `}
-      >
-        {title}
-      </Link>
-    );
 
     return (
       <ChartHeaderStyles data-test="slice-header" ref={ref}>
@@ -250,9 +227,6 @@ const SliceHeader = forwardRef<HTMLDivElement, SliceHeaderProps>(
                 canEdit={editMode}
                 onSaveTitle={updateSliceName}
                 showTooltip={false}
-                renderLink={
-                  canExplore && exploreUrl ? renderExploreLink : undefined
-                }
               />
             </div>
           </Tooltip>

@@ -296,7 +296,11 @@ const FiltersConfigForm = (
   }, [onModifyFilter, filterId]);
 
   const dependencies: string[] =
-    formFilter?.dependencies || filterToEdit?.cascadeParentIds || [];
+    formFilter?.dependencies ||
+    filterToEdit?.cascadeParentIds?.filter(
+      dependencyId => dependencyId !== filterToEdit?.cascadeParentId,
+    ) ||
+    [];
 
   const nativeFilterItems = getChartMetadataRegistry().items;
   const nativeFilterVizTypes = Object.entries(nativeFilterItems)

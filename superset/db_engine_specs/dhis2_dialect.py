@@ -2781,6 +2781,14 @@ class DHIS2Cursor:
         # CRITICAL: If WHERE clause has org unit filters, they OVERRIDE the 'ou' parameter
         # This enables dashboard filters to work correctly
         if where_ou_filters:
+            where_ou_filters_by_level: dict[int, list[str]] = {}
+            for value, level in where_ou_pairs:
+                if level is None:
+                    continue
+                where_ou_filters_by_level.setdefault(level, [])
+                if value not in where_ou_filters_by_level[level]:
+                    where_ou_filters_by_level[level].append(value)
+
             # If multiple org unit levels are present, keep only the deepest level
             if where_ou_pairs:
                 levels = [lvl for _, lvl in where_ou_pairs if lvl is not None]
@@ -2792,6 +2800,8 @@ class DHIS2Cursor:
             final_params['ou_name_filters'] = where_ou_filters
             if where_ou_level:
                 final_params['ou_filter_level'] = where_ou_level
+            if where_ou_filters_by_level:
+                final_params['ou_name_filters_by_level'] = where_ou_filters_by_level
             print(f"[DHIS2] WHERE clause org unit filters will OVERRIDE base 'ou' param: {where_ou_filters[:3]}")
             logger.info(f"WHERE clause org unit filters detected: {where_ou_filters[:5]} - will override base ou param")
 
@@ -3634,12 +3644,36 @@ class DHIS2Cursor:
         try:
             if "dataLevelScope" not in query_params:
                 select_columns = self._extract_select_columns(query)
-                if any(
-                    (c or "").strip().lower() == "district" for c in select_columns
-                ):
+                selected_org_unit_levels = [
+                    self._infer_org_unit_level_from_column((c or "").strip())
+                    for c in select_columns
+                ]
+                selected_org_unit_levels = [
+                    level for level in selected_org_unit_levels if level is not None
+                ]
+                selected_level = min(selected_org_unit_levels) if selected_org_unit_levels else None
+                deepest_filter_level = query_params.get("ou_filter_level")
+
+                should_constrain_to_children = (
+                    any((c or "").strip().lower() == "district" for c in select_columns)
+                    and selected_level is not None
+                    and (
+                        deepest_filter_level is None
+                        or deepest_filter_level <= selected_level
+                    )
+                )
+
+                if should_constrain_to_children:
                     query_params["dataLevelScope"] = "children"
                     logger.info(
                         "[DHIS2] Setting dataLevelScope=children to avoid NULLs for District grouping"
+                    )
+                elif deepest_filter_level and selected_level and deepest_filter_level > selected_level:
+                    logger.info(
+                        "[DHIS2] Skipping dataLevelScope=children because a deeper org unit filter is active "
+                        "(selected_level=%s, deepest_filter_level=%s)",
+                        selected_level,
+                        deepest_filter_level,
                     )
         except Exception:
             pass
@@ -3721,20 +3755,30 @@ class DHIS2Cursor:
                     return
 
             ou_name_filters = query_params.get("ou_name_filters") or []
-            if child_level and ou_name_filters:
+            ou_name_filters_by_level = query_params.get("ou_name_filters_by_level") or {}
+            parent_level = child_level - 1 if child_level else None
+            parent_filters = (
+                ou_name_filters_by_level.get(parent_level, [])
+                if parent_level is not None
+                else []
+            )
+            if not parent_filters:
+                parent_filters = ou_name_filters
+
+            if child_level and parent_filters:
                 logger.info(
                     "[DHIS2 Cascade] WHERE-driven options: child_column=%s child_level=%s parents=%s",
                     child_column,
                     child_level,
-                    ou_name_filters,
+                    parent_filters,
                 )
                 print(
                     f"[DHIS2 Cascade] WHERE-driven options: child_column={child_column} "
-                    f"child_level={child_level} parents={ou_name_filters}"
+                    f"child_level={child_level} parents={parent_filters}"
                 )
 
                 child_org_units = self.connection.fetch_child_org_units(
-                    ou_name_filters, child_level
+                    parent_filters, child_level
                 )
                 if child_org_units:
                     self._rows = [(ou.get("displayName"),) for ou in child_org_units]
@@ -3927,6 +3971,8 @@ class DHIS2Cursor:
             del query_params['ou_name_filters']
             if 'ou_filter_level' in query_params:
                 del query_params['ou_filter_level']
+            if 'ou_name_filters_by_level' in query_params:
+                del query_params['ou_name_filters_by_level']
 
         # Merge all parameter sources
         api_params = self._merge_params(endpoint, query_params)

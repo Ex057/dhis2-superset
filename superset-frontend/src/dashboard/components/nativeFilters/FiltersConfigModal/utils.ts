@@ -124,6 +124,14 @@ export const createHandleSave =
         target.column = { name: formInputs.column };
       }
 
+      const dependencies = formInputs.dependencies || [];
+      const cascadeParentIds = formInputs.cascadeParentId
+        ? [
+            formInputs.cascadeParentId,
+            ...dependencies.filter(id => id !== formInputs.cascadeParentId),
+          ]
+        : dependencies;
+
       return {
         id,
         adhoc_filters: formInputs.adhoc_filters,
@@ -137,7 +145,8 @@ export const createHandleSave =
         filterType: formInputs.filterType,
         targets: [target],
         defaultDataMask: formInputs.defaultDataMask ?? getInitialDataMask(),
-        cascadeParentIds: formInputs.dependencies || [],
+        cascadeParentId: formInputs.cascadeParentId ?? null,
+        cascadeParentIds,
         scope: formInputs.scope,
         sortMetric: formInputs.sortMetric,
         type: formInputs.type,
