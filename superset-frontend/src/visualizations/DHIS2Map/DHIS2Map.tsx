@@ -144,6 +144,20 @@ const MapWrapper = styled.div`
       background: #f4f4f4;
     }
   }
+
+  .map-interaction-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 900;
+    background: rgba(255, 255, 255, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    font-size: 12px;
+    font-weight: 500;
+    color: #333333;
+  }
 `;
 /* eslint-enable theme-colors/no-literal-colors */
 
@@ -231,6 +245,7 @@ function MapAutoFocus({
             animate: true,
             duration: 0.5,
           });
+          map.setMaxBounds(bounds);
 
           // Force invalidate size after bounds change
           map.invalidateSize();
@@ -272,18 +287,29 @@ function BoundaryMask({
   const map = useMap();
   const [paneReady, setPaneReady] = useState(false);
 
+  const extractOuterRings = useCallback(
+    (feature: BoundaryFeature): number[][][] => {
+      const { geometry } = feature;
+      if (!geometry || !geometry.coordinates) {
+        return [];
+      }
+      if (geometry.type === 'Polygon') {
+        const coords = geometry.coordinates as number[][][];
+        return coords && coords[0] ? [coords[0]] : [];
+      }
+      if (geometry.type === 'MultiPolygon') {
+        const coords = geometry.coordinates as unknown as number[][][][];
+        return coords.map(poly => poly[0]).filter(Boolean);
+      }
+      return [];
+    },
+    [],
+  );
+
   const maskFeature = useMemo(() => {
     if (!enabled || boundaries.length === 0) {
       return null;
     }
-
-    const bounds = calculateBounds(boundaries);
-    if (!bounds || !bounds.isValid()) {
-      return null;
-    }
-
-    const sw = bounds.getSouthWest();
-    const ne = bounds.getNorthEast();
 
     const outerRing = [
       [-180, 90],
@@ -293,23 +319,20 @@ function BoundaryMask({
       [-180, 90],
     ];
 
-    const innerRing = [
-      [sw.lng, ne.lat],
-      [ne.lng, ne.lat],
-      [ne.lng, sw.lat],
-      [sw.lng, sw.lat],
-      [sw.lng, ne.lat],
-    ];
+    const innerRings = boundaries.flatMap(feature => extractOuterRings(feature));
+    if (innerRings.length === 0) {
+      return null;
+    }
 
     return {
       type: 'Feature' as const,
       geometry: {
         type: 'Polygon' as const,
-        coordinates: [outerRing, innerRing],
+        coordinates: [outerRing, ...innerRings],
       },
       properties: {},
     };
-  }, [boundaries, enabled]);
+  }, [boundaries, enabled, extractOuterRings]);
 
   useEffect(() => {
     if (!enabled || !map) {
@@ -322,6 +345,7 @@ function BoundaryMask({
     if (!pane) {
       pane = map.createPane(paneName);
       pane.style.zIndex = '250';
+      pane.style.pointerEvents = 'none';
     }
     setPaneReady(true);
   }, [enabled, map]);
@@ -335,7 +359,7 @@ function BoundaryMask({
       data={maskFeature as any}
       style={() => ({
         fillColor: '#ffffff',
-        fillOpacity: 0.75,
+        fillOpacity: 0.9,
         color: 'transparent',
         weight: 0,
       })}
@@ -519,6 +543,7 @@ function DHIS2Map({
   );
   const [dhis2DataLoading, setDhis2DataLoading] = useState(false);
   const [showDataPreview, setShowDataPreview] = useState(false);
+  const [interactionEnabled, setInteractionEnabled] = useState(false);
 
   // Fetch and cache org unit levels for the control panel dropdown
   // This ensures the boundary_levels control shows actual DHIS2 levels
@@ -1748,11 +1773,16 @@ function DHIS2Map({
         className: 'dhis2-map-tooltip-container',
       });
 
-      layer.on({
+      const handlers: Record<string, () => void> = {
         mouseover: () => setHoveredFeature(feature.id),
         mouseout: () => setHoveredFeature(null),
-        click: () => handleDrillDown(feature),
-      });
+      };
+
+      if (enableDrill) {
+        handlers.click = () => handleDrillDown(feature);
+      }
+
+      layer.on(handlers);
 
       if (showLabels && feature.geometry.type !== 'Point') {
         const center = L.geoJSON(feature).getBounds().getCenter();
@@ -1805,6 +1835,7 @@ function DHIS2Map({
       showLabels,
       labelType,
       labelFontSize,
+      enableDrill,
       handleDrillDown,
       mapInstance,
     ],
@@ -1817,6 +1848,12 @@ function DHIS2Map({
         center={[1.3733, 32.2903]}
         zoom={7}
         zoomControl={false}
+        scrollWheelZoom={false}
+        dragging={interactionEnabled}
+        doubleClickZoom={interactionEnabled}
+        boxZoom={interactionEnabled}
+        keyboard={interactionEnabled}
+        touchZoom={interactionEnabled}
         ref={(mapRef: any) => mapRef && setMapInstance(mapRef)}
       >
         {/* @ts-ignore - React 19 compatibility */}
@@ -1833,7 +1870,7 @@ function DHIS2Map({
       {/* @ts-ignore - React 19 compatibility */}
       <BoundaryMask
         boundaries={displayBoundaries}
-        enabled={baseMapType === 'light'}
+        enabled={displayBoundaries.length > 0}
       />
 
         {/* Manual focus button */}
@@ -1873,6 +1910,22 @@ function DHIS2Map({
           />
         )}
       </MapContainer>
+
+      {!interactionEnabled && (
+        <div
+          className="map-interaction-overlay"
+          role="button"
+          tabIndex={0}
+          onClick={() => setInteractionEnabled(true)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              setInteractionEnabled(true);
+            }
+          }}
+        >
+          {t('Click to interact with map')}
+        </div>
+      )}
 
       {/* Base Map Selector */}
       {/* @ts-ignore - React 19 compatibility */}
