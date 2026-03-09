@@ -23,9 +23,9 @@ FRONTEND_LOG_FILE="$LOG_DIR/superset_frontend.log"
 PID_FILE="$PROJECT_DIR/superset.pid"
 FRONTEND_PID_FILE="$PROJECT_DIR/superset_frontend.pid"
 CACHE_DIR="$PROJECT_DIR/superset_home/cache"
-FRONTEND_PORT=9000
+FRONTEND_PORT=9001
 BACKEND_PORT=8088
-WEBPACK_DEV_PORT=8081
+WEBPACK_DEV_PORT=9001
 WEBPACK_DEV_PID_FILE="$PROJECT_DIR/webpack_dev.pid"
 WEBPACK_DEV_LOG_FILE="$LOG_DIR/webpack_dev.log"
 
@@ -408,9 +408,9 @@ stop_frontend() {
     fi
 }
 
-# Start webpack dev server (port 8081)
+# Start webpack dev server (port 9001)
 start_webpack_dev() {
-    print_header "🚀 Starting Webpack Dev Server (Port 8081)"
+    print_header "🚀 Starting Webpack Dev Server (Port 9001)"
 
     if is_webpack_dev_running; then
         print_warning "Webpack dev server is already running"
@@ -463,7 +463,7 @@ start_webpack_dev() {
 
 # Stop webpack dev server
 stop_webpack_dev() {
-    print_header "🛑 Stopping Webpack Dev Server (Port 8081)"
+    print_header "🛑 Stopping Webpack Dev Server (Port 9001)"
 
     if ! is_webpack_dev_running; then
         print_warning "Webpack dev server is not running"
@@ -698,7 +698,7 @@ status_frontend() {
 
 # Show webpack dev server status
 status_webpack_dev() {
-    print_header "📊 Webpack Dev Server Status (Port 8081)"
+    print_header "📊 Webpack Dev Server Status (Port 9001)"
 
     if is_webpack_dev_running; then
         if [ -f "$WEBPACK_DEV_PID_FILE" ]; then
@@ -709,7 +709,7 @@ status_webpack_dev() {
         fi
 
         # Show port info
-        print_info "Port $WEBPACK_DEV_PORT: In use"
+    print_info "Port $WEBPACK_DEV_PORT: In use"
 
         # Test if server responds
         if curl -s http://localhost:$WEBPACK_DEV_PORT > /dev/null 2>&1; then
@@ -724,7 +724,7 @@ status_webpack_dev() {
     else
         print_warning "Webpack dev server is not running"
         echo ""
-        print_info "Start with: ./superset-manager.sh start-webpack"
+    print_info "Start with: ./superset-manager.sh start-webpack"
     fi
 }
 
@@ -969,7 +969,7 @@ FRONTEND COMMANDS:
     status-frontend     Show frontend status
 
 WEBPACK DEV SERVER COMMANDS:
-    start-webpack       Start webpack dev server (port 8081)
+    start-webpack       Start webpack dev server (port 9001)
     stop-webpack        Stop webpack dev server
     restart-webpack     Restart webpack dev server
     status-webpack      Show webpack dev server status
@@ -1039,7 +1039,7 @@ NOTES:
     - Use 'start-all' for complete development environment
     - 'start' (backend) automatically tails logs after startup - Ctrl+C to stop following
     - Frontend dev server enables hot module reloading
-    - Webpack dev server serves compiled assets on port 8081
+    - Webpack dev server serves compiled assets on port 9001
     - After cache cleanup, hard-refresh browser (Cmd+Shift+R or Ctrl+Shift+R)
     - All logs stored in: logs/ directory (see locations below)
     - Redis is OPTIONAL: Superset works without it, but Redis gives 90% faster DHIS2 performance
@@ -1047,7 +1047,7 @@ NOTES:
 PORTS:
     Backend:            http://localhost:8088
     Frontend:           http://localhost:9000
-    Webpack Dev Server: http://localhost:8081
+    Webpack Dev Server: http://localhost:9001
 
 LOG FILES:
     Backend logs:       logs/superset_backend.log
@@ -1185,5 +1185,3 @@ main() {
 
 # Run main function
 main "$@"
-
-

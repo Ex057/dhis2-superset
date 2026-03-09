@@ -206,10 +206,43 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     filterState && Object.keys(filterState).length > 0 ? filterState : {};
 
   // Get dataset SQL for fallback DHIS2 data fetching (used early for org unit detection)
-  const datasetSql = (datasource as any)?.sql || '';
-  // Check if this is a DHIS2 dataset (has DHIS2 comment in SQL)
-  const isDHIS2Dataset =
+  // If SQL is missing DHIS2 comment, try to reconstruct from datasource.extra.dhis2_params
+  const datasourceAny = datasource as any;
+  let datasetSql = datasourceAny?.sql || '';
+  let isDHIS2Dataset =
     datasetSql.includes('/* DHIS2:') || datasetSql.includes('-- DHIS2:');
+
+  if (!isDHIS2Dataset) {
+    const extraRaw = datasourceAny?.extra;
+    let extraParsed: any;
+    try {
+      extraParsed =
+        typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
+    } catch {
+      extraParsed = null;
+    }
+
+    const dhis2ParamsMap = extraParsed?.dhis2_params;
+    if (dhis2ParamsMap) {
+      const tableName =
+        datasourceAny?.table_name || datasourceAny?.table?.name || datasourceAny?.name;
+      let dhis2Params: string | undefined =
+        (tableName && dhis2ParamsMap[tableName]) || undefined;
+
+      if (!dhis2Params) {
+        const values = Object.values(dhis2ParamsMap);
+        if (values.length === 1) {
+          dhis2Params = String(values[0]);
+        }
+      }
+
+      if (dhis2Params) {
+        const safeTable = tableName || 'analytics';
+        datasetSql = `SELECT * FROM ${safeTable}\n/* DHIS2: ${dhis2Params} */`;
+        isDHIS2Dataset = true;
+      }
+    }
+  }
 
   // Get metric - could be string or object with column_name
   const metricString =
@@ -606,11 +639,19 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     dataRowCount: data.length,
   });
 
+  // Derive datasetId if datasource payload is minimal (e.g., dashboards)
+  const datasetId =
+    (datasource as any)?.id ||
+    (typeof (formData as any)?.datasource === 'string'
+      ? parseInt((formData as any).datasource.split('__')[0], 10)
+      : undefined);
+
   return {
     width,
     height,
     data,
     databaseId,
+    datasetId,
     orgUnitColumn: hierarchyLevelColumn,
     metric: metricColumn,
     aggregationMethod: aggregation_method || 'sum',

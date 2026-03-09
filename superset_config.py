@@ -33,6 +33,10 @@ MAPBOX_API_KEY = os.environ.get('MAPBOX_API_KEY', '')
 # Secret key for signing cookies
 SECRET_KEY = "222nevYrQia2O5NAfpkFgaD9g7loFW2gqpW6C+lh1t/mj77t8kRQpHwG"
 
+# Use webpack dev server for frontend assets during local development
+DEBUG = True
+WEBPACK_DEV_SERVER_URL = "http://localhost:9001"
+
 # Enable embedding dashboards (for /superset/public/)
 EMBEDDED_SUPERSET = True
 ENABLE_CORS = True

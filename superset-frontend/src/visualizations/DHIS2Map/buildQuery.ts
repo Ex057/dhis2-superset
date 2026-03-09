@@ -28,16 +28,38 @@ export default function buildQuery(formData: QueryFormData) {
     org_unit_column,
     boundary_levels,
     boundary_level,
+    viz_type,
   } = formData;
 
   return buildQueryContext(formData, baseQueryObject => {
     // Check if this is a DHIS2 dataset by looking at the datasource SQL
     // For DHIS2 datasets, we don't execute SQL through the standard chart API
     // Instead, DHIS2Map will fetch data via DHIS2DataLoader
-    const datasourceSql = (baseQueryObject as any)?.datasource?.sql || '';
-    const isDHIS2Dataset =
+    const datasourceAny = (baseQueryObject as any)?.datasource || {};
+    const datasourceSql = datasourceAny?.sql || '';
+    let isDHIS2Dataset =
       datasourceSql.includes('/* DHIS2:') ||
       datasourceSql.includes('-- DHIS2:');
+
+    if (!isDHIS2Dataset) {
+      const extraRaw = datasourceAny?.extra;
+      let extraParsed: any;
+      try {
+        extraParsed =
+          typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
+      } catch {
+        extraParsed = null;
+      }
+      if (extraParsed?.dhis2_params) {
+        isDHIS2Dataset = true;
+      }
+    }
+
+    // Fallback: for DHIS2 Map viz, treat as DHIS2 dataset even if SQL is not present.
+    // This prevents running a normal chart query and lets DHIS2Map fetch data via DHIS2 loader.
+    if (!isDHIS2Dataset && viz_type === 'dhis2_map' && !datasourceSql) {
+      isDHIS2Dataset = true;
+    }
 
     // eslint-disable-next-line no-console
     console.log('[DHIS2Map buildQuery] Dataset type:', {
@@ -46,7 +68,9 @@ export default function buildQuery(formData: QueryFormData) {
       sqlPreview: datasourceSql.substring(0, 100),
     });
 
-    // For DHIS2 datasets, return minimal query - data will be fetched via DHIS2DataLoader
+    // For DHIS2 datasets, return a minimal safe query.
+    // Explore still calls /api/v1/chart/data; an empty query triggers a 400.
+    // We keep it tiny to avoid heavy backend work while letting DHIS2Map fetch via DHIS2DataLoader.
     if (isDHIS2Dataset) {
       // Determine the selected boundary level for hierarchy column selection
       let selectedLevel = 2;
@@ -56,19 +80,32 @@ export default function buildQuery(formData: QueryFormData) {
         selectedLevel = Array.isArray(boundary_level) ? boundary_level[0] : boundary_level;
       }
       
+      const minimalGroupby: string[] = org_unit_column
+        ? [sanitizeDHIS2ColumnName(org_unit_column)]
+        : [];
+
+      const minimalMetric =
+        metric && metric !== ''
+          ? metric
+          : {
+              expressionType: 'SQL',
+              sqlExpression: 'COUNT(*)',
+              label: '__count',
+            };
+
       // eslint-disable-next-line no-console
       console.log(
         '[DHIS2Map buildQuery] DHIS2 dataset detected - ' +
           'returning minimal query for component-level data fetching',
-        { selectedLevel, boundary_levels, boundary_level },
+        { selectedLevel, boundary_levels, boundary_level, minimalGroupby },
       );
       return [
         {
           ...baseQueryObject,
-          // Return empty query - DHIS2Map will fetch data via DHIS2DataLoader
-          groupby: [],
-          metrics: [],
-          row_limit: 0,
+          // Minimal query to avoid "Empty query" backend error
+          groupby: minimalGroupby,
+          metrics: [minimalMetric],
+          row_limit: 1,
           // Mark this as a DHIS2 query so we know to skip chart API execution
           is_dhis2: true,
           // Pass the selected boundary level so data loading can fetch appropriate org units

@@ -105,6 +105,7 @@ export interface DHIS2MapProps {
   // DHIS2 specific props for fallback data fetching
   datasetSql?: string;
   isDHIS2Dataset?: boolean;
+  datasetId?: number;
   // Boundary loading method: 'geoFeatures' (default) or 'geoJSON'
   boundaryLoadMethod?: 'geoFeatures' | 'geoJSON';
 }

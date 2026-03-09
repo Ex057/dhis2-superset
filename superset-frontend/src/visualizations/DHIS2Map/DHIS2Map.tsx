@@ -502,6 +502,7 @@ function DHIS2Map({
   nativeFilters = {},
   datasetSql = '',
   isDHIS2Dataset = false,
+  datasetId,
   boundaryLoadMethod = 'geoFeatures',
 }: DHIS2MapProps): ReactElement {
   // Ensure we always have at least one boundary level to fetch.
@@ -524,6 +525,7 @@ function DHIS2Map({
     metric,
     dataLength: data?.length,
     isDHIS2Dataset,
+    datasetId,
     hasDatasetSql: !!datasetSql,
     levelBorderColors,
     strokeColor,
@@ -555,6 +557,80 @@ function DHIS2Map({
   const [dhis2DataLoading, setDhis2DataLoading] = useState(false);
   const [showDataPreview, setShowDataPreview] = useState(false);
   const [interactionEnabled, setInteractionEnabled] = useState(false);
+  const [resolvedDatasetSql, setResolvedDatasetSql] = useState(datasetSql);
+  const [resolvedIsDHIS2Dataset, setResolvedIsDHIS2Dataset] =
+    useState(isDHIS2Dataset);
+
+  // Resolve dataset SQL/params when missing (e.g., production payload lacks SQL)
+  useEffect(() => {
+    let mounted = true;
+
+    // eslint-disable-next-line no-console
+    console.log('[DHIS2Map] resolve dataset', {
+      datasetId,
+      datasetSql,
+      isDHIS2Dataset,
+    });
+
+    const hasComment =
+      datasetSql?.includes('/* DHIS2:') || datasetSql?.includes('-- DHIS2:');
+    if (isDHIS2Dataset || hasComment || !datasetId) {
+      setResolvedDatasetSql(datasetSql);
+      setResolvedIsDHIS2Dataset(isDHIS2Dataset || hasComment);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    SupersetClient.get({ endpoint: `/api/v1/dataset/${datasetId}/` })
+      .then(response => {
+        if (!mounted) return;
+        const ds = response.json?.result || {};
+        let sql: string = ds.sql || '';
+        let isDHIS2 = sql.includes('/* DHIS2:') || sql.includes('-- DHIS2:');
+
+        if (!isDHIS2) {
+          const extraRaw = ds.extra;
+          let extraParsed: any;
+          try {
+            extraParsed =
+              typeof extraRaw === 'string' ? JSON.parse(extraRaw) : extraRaw;
+          } catch {
+            extraParsed = null;
+          }
+
+          const dhis2ParamsMap = extraParsed?.dhis2_params;
+          if (dhis2ParamsMap) {
+            const tableName = ds.table_name || ds.table?.name || ds.name;
+            let dhis2Params: string | undefined =
+              (tableName && dhis2ParamsMap[tableName]) || undefined;
+            if (!dhis2Params) {
+              const values = Object.values(dhis2ParamsMap);
+              if (values.length === 1) {
+                dhis2Params = String(values[0]);
+              }
+            }
+            if (dhis2Params) {
+              const safeTable = tableName || 'analytics';
+              sql = `SELECT * FROM ${safeTable}\n/* DHIS2: ${dhis2Params} */`;
+              isDHIS2 = true;
+            }
+          }
+        }
+
+        setResolvedDatasetSql(sql);
+        setResolvedIsDHIS2Dataset(isDHIS2);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setResolvedDatasetSql(datasetSql);
+        setResolvedIsDHIS2Dataset(isDHIS2Dataset);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [datasetId, datasetSql, isDHIS2Dataset]);
 
   // Fetch and cache org unit levels for the control panel dropdown
   // This ensures the boundary_levels control shows actual DHIS2 levels
@@ -610,15 +686,17 @@ function DHIS2Map({
   useEffect(() => {
     // Auto-detect if this is a DHIS2 dataset by checking SQL for DHIS2 parameters
     const hasDHIS2Params =
-      datasetSql && /\/\*\s*DHIS2:\s*(.+?)\s*\*\//i.test(datasetSql);
-    const shouldFetchDHIS2 = isDHIS2Dataset || hasDHIS2Params;
+      resolvedDatasetSql &&
+      /\/\*\s*DHIS2:\s*(.+?)\s*\*\//i.test(resolvedDatasetSql);
+    const shouldFetchDHIS2 = resolvedIsDHIS2Dataset || hasDHIS2Params;
 
     // eslint-disable-next-line no-console
     console.log('[DHIS2Map] DHIS2 detection:', {
       isDHIS2Dataset,
+      resolvedIsDHIS2Dataset,
       hasDHIS2Params,
       shouldFetchDHIS2,
-      datasetSqlLength: datasetSql?.length,
+      datasetSqlLength: resolvedDatasetSql?.length,
     });
 
     // Only fetch if:
@@ -630,18 +708,18 @@ function DHIS2Map({
       (data && data.length > 0) ||
       !shouldFetchDHIS2 ||
       !databaseId ||
-      !datasetSql ||
+      !resolvedDatasetSql ||
       dhis2DataLoading
     ) {
       // eslint-disable-next-line no-console
       console.log('[DHIS2Map] Skipping DHIS2 data fetch:', {
         hasData: data && data.length > 0,
-        shouldFetchDHIS2,
-        hasDatabaseId: !!databaseId,
-        hasDatasetSql: !!datasetSql,
-        isLoading: dhis2DataLoading,
-      });
-      return;
+      shouldFetchDHIS2,
+      hasDatabaseId: !!databaseId,
+      hasDatasetSql: !!resolvedDatasetSql,
+      isLoading: dhis2DataLoading,
+    });
+    return;
     }
 
     // eslint-disable-next-line no-console
@@ -649,7 +727,7 @@ function DHIS2Map({
       '[DHIS2Map] Standard data empty, fetching via DHIS2 chart data API',
     );
     // eslint-disable-next-line no-console
-    console.log('[DHIS2Map] Dataset SQL:', datasetSql);
+    console.log('[DHIS2Map] Dataset SQL:', resolvedDatasetSql);
 
     setDhis2DataLoading(true);
     setError(null);
@@ -664,7 +742,7 @@ function DHIS2Map({
 
     DHIS2DataLoader.fetchChartData(
       databaseId,
-      datasetSql,
+      resolvedDatasetSql,
       10000,
       drillState.currentLevel,
       drillState.parentId,
@@ -713,7 +791,13 @@ function DHIS2Map({
         setDhis2DataLoading(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, isDHIS2Dataset, databaseId, datasetSql, drillState.currentLevel]);
+  }, [
+    data,
+    resolvedIsDHIS2Dataset,
+    databaseId,
+    resolvedDatasetSql,
+    drillState.currentLevel,
+  ]);
 
   // Use DHIS2 data if available, otherwise use standard data
   const effectiveData = useMemo(() => {
