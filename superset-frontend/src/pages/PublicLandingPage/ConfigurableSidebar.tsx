@@ -167,7 +167,22 @@ const SidebarTitle = styled.div`
 `;
 
 const TopBarInner = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 16px;
   min-width: max-content;
+  padding: 8px 12px;
+`;
+
+const TopBarTitle = styled.div`
+  ${({ theme }) => `
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
+    white-space: nowrap;
+  `}
 `;
 
 const LoadingContainer = styled.div`
@@ -243,7 +258,7 @@ export default function ConfigurableSidebar({
     >
       {layoutMode === 'top' ? (
         <TopBarInner>
-          <SidebarTitle>{t(config.title)}</SidebarTitle>
+          <TopBarTitle>{t(config.title)}</TopBarTitle>
           {loading ? (
             <LoadingContainer>
               <Loading />

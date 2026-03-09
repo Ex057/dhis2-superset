@@ -339,6 +339,95 @@ class DHIS2ResponseNormalizer:
     """
 
     @staticmethod
+    def _period_start(period_id: str | None, period_name: str | None) -> str | None:
+        """
+        Best-effort parse of DHIS2 period identifiers into an ISO date string.
+
+        Returns the start date of the period as YYYY-MM-DD, or None if parsing fails.
+        """
+        if period_id:
+            raw = str(period_id)
+            # Daily: YYYYMMDD
+            if re.match(r"^\d{8}$", raw):
+                try:
+                    return datetime.strptime(raw, "%Y%m%d").date().isoformat()
+                except ValueError:
+                    pass
+            # Monthly: YYYYMM
+            if re.match(r"^\d{6}$", raw):
+                try:
+                    return datetime.strptime(raw, "%Y%m").date().isoformat()
+                except ValueError:
+                    pass
+            # Yearly: YYYY
+            if re.match(r"^\d{4}$", raw):
+                try:
+                    return datetime.strptime(raw, "%Y").date().isoformat()
+                except ValueError:
+                    pass
+            # Quarterly: YYYYQ1..YYYYQ4
+            match = re.match(r"^(\d{4})Q([1-4])$", raw, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                quarter = int(match.group(2))
+                month = (quarter - 1) * 3 + 1
+                return datetime(year, month, 1).date().isoformat()
+            # Semi-annual: YYYYS1 or YYYYS2
+            match = re.match(r"^(\d{4})S([1-2])$", raw, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                half = int(match.group(2))
+                month = 1 if half == 1 else 7
+                return datetime(year, month, 1).date().isoformat()
+            # Bi-monthly: YYYYB1..YYYYB6
+            match = re.match(r"^(\d{4})B([1-6])$", raw, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                bimonth = int(match.group(2))
+                month = (bimonth - 1) * 2 + 1
+                return datetime(year, month, 1).date().isoformat()
+            # Weekly: YYYYW01..YYYYW53 (ISO week)
+            match = re.match(r"^(\d{4})W(\d{1,2})$", raw, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                week = int(match.group(2))
+                try:
+                    return datetime.fromisocalendar(year, week, 1).date().isoformat()
+                except ValueError:
+                    pass
+            # Month name: YYYYJan..YYYYDec
+            match = re.match(r"^(\d{4})(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$", raw, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                mon = match.group(2).lower()
+                month_map = {
+                    "jan": 1,
+                    "feb": 2,
+                    "mar": 3,
+                    "apr": 4,
+                    "may": 5,
+                    "jun": 6,
+                    "jul": 7,
+                    "aug": 8,
+                    "sep": 9,
+                    "oct": 10,
+                    "nov": 11,
+                    "dec": 12,
+                }
+                month = month_map.get(mon)
+                if month:
+                    return datetime(year, month, 1).date().isoformat()
+
+        if period_name:
+            for fmt in ("%B %Y", "%b %Y"):
+                try:
+                    return datetime.strptime(period_name, fmt).date().isoformat()
+                except ValueError:
+                    continue
+
+        return None
+
+    @staticmethod
     def extract_source_table_from_sql(sql: str) -> str | None:
         """
         Extract the DHIS2 source table from SQL comment or table name pattern
@@ -390,12 +479,17 @@ class DHIS2ResponseNormalizer:
         value_idx = col_map.get("value")
 
         # Column names for long format - ALL columns MUST be SANITIZED
-        col_names = [sanitize_dhis2_column_name(col) for col in ["Period", "OrgUnit", "DataElement", "Value"]]
+        col_names = [
+            sanitize_dhis2_column_name(col)
+            for col in ["Period", "Period_Start", "OrgUnit", "DataElement", "Value"]
+        ]
 
         # Build rows in long format
         long_rows = []
         for row in rows_data:
-            pe_name = get_name_func(row[pe_idx]) if pe_idx is not None else None
+            pe_id = row[pe_idx] if pe_idx is not None else None
+            pe_name = get_name_func(pe_id) if pe_idx is not None else None
+            pe_start = DHIS2ResponseNormalizer._period_start(pe_id, pe_name)
             ou_name = get_name_func(row[ou_idx]) if ou_idx is not None else None
             dx_name = get_name_func(row[dx_idx]) if dx_idx is not None else None
             value = row[value_idx] if value_idx is not None else None
@@ -409,7 +503,7 @@ class DHIS2ResponseNormalizer:
                 except (ValueError, AttributeError):
                     pass  # Keep as string
 
-            long_rows.append((pe_name, ou_name, dx_name, value))
+            long_rows.append((pe_name, pe_start, ou_name, dx_name, value))
 
         logger.info(f"Returned LONG format: {len(long_rows)} rows (Period, OrgUnit, DataElement, Value)")
         return col_names, long_rows
@@ -549,7 +643,10 @@ class DHIS2ResponseNormalizer:
         # 3. Query results (this function) - must return sanitized names
         # Note: OrgUnit column removed - hierarchy levels provide the granular context
         data_element_list = sorted(data_elements)
-        col_names = [sanitize_dhis2_column_name("Period")]
+        col_names = [
+            sanitize_dhis2_column_name("Period"),
+            sanitize_dhis2_column_name("Period_Start"),
+        ]
         
         if org_unit_level_names is None:
             org_unit_level_names = {}
@@ -578,12 +675,13 @@ class DHIS2ResponseNormalizer:
         pivoted_rows = []
         for (pe, ou) in sorted(pivot_data.keys()):
             pe_name = get_name(pe)
+            pe_start = DHIS2ResponseNormalizer._period_start(pe, pe_name)
 
             # Debug logging to identify concatenation
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Pivoting row - PE UID: {pe}, PE name: {pe_name}, OU UID: {ou}")
 
-            row = [pe_name]
+            row = [pe_name, pe_start]
             
             # Append hierarchy values for available levels only
             if org_unit_level_names:
@@ -617,7 +715,7 @@ class DHIS2ResponseNormalizer:
             if len(pivoted_rows) == 1:
                 logger.info(f"[DHIS2] FIRST ROW CONSTRUCTION:")
                 logger.info(f"[DHIS2]   Period (index 0): {row[0]}")
-                data_element_start_idx = 1 + len(levels_to_append)
+                data_element_start_idx = 2 + len(levels_to_append)
                 for i, de in enumerate(data_element_list):
                     de_idx = data_element_start_idx + i
                     logger.info(f"[DHIS2]   {get_name(de)} (index {de_idx}): {row[de_idx]}")
@@ -648,7 +746,10 @@ class DHIS2ResponseNormalizer:
             org_unit_level_names = {}
 
         if not data_values:
-            col_names = [sanitize_dhis2_column_name(col) for col in ["dataElement", "period", "value"]]
+            col_names = [
+                sanitize_dhis2_column_name(col)
+                for col in ["dataElement", "period", "period_start", "value"]
+            ]
             if org_unit_level_names:
                 for level in sorted(org_unit_level_names.keys()):
                     level_name = org_unit_level_names.get(level)
@@ -658,7 +759,10 @@ class DHIS2ResponseNormalizer:
                     col_names.append(sanitize_dhis2_column_name(f"Level_{level}_Name"))
             return col_names, []
 
-        col_names = [sanitize_dhis2_column_name(col) for col in ["dataElement", "period", "value"]]
+        col_names = [
+            sanitize_dhis2_column_name(col)
+            for col in ["dataElement", "period", "period_start", "value"]
+        ]
         
         if org_unit_level_names:
             for level in sorted(org_unit_level_names.keys()):
@@ -677,9 +781,12 @@ class DHIS2ResponseNormalizer:
             levels_to_append = list(range(1, 7))
         
         for dv in data_values:
+            period_id = dv.get("period")
+            period_start = DHIS2ResponseNormalizer._period_start(period_id, None)
             row = [
                 dv.get("dataElement"),
-                dv.get("period"),
+                period_id,
+                period_start,
                 dv.get("value"),
             ]
             
@@ -1118,7 +1225,12 @@ class DHIS2Dialect(default.DefaultDialect):
         Parse URL and return connection arguments for DHIS2Connection
         This is called by SQLAlchemy to convert the URL into connection parameters
         """
-        logger.debug(f"create_connect_args called with URL: {url}")
+        safe_url = (
+            url.render_as_string(hide_password=True)
+            if hasattr(url, "render_as_string")
+            else str(url)
+        )
+        logger.debug(f"create_connect_args called with URL: {safe_url}")
 
         # Extract connection details from URL
         opts = {
@@ -1128,7 +1240,10 @@ class DHIS2Dialect(default.DefaultDialect):
             "database": url.database,  # This will be the path like /stable-2-42-2/api
         }
 
-        logger.debug(f"Parsed connection opts: {opts}")
+        safe_opts = dict(opts)
+        if safe_opts.get("password"):
+            safe_opts["password"] = "********"
+        logger.debug(f"Parsed connection opts: {safe_opts}")
 
         # Return (args, kwargs) tuple for DHIS2Connection.__init__()
         return ([], opts)
@@ -1198,8 +1313,22 @@ class DHIS2Dialect(default.DefaultDialect):
         # Note: analytics endpoint uses WIDE format (pe, ou, dx1, dx2, ...) for horizontal data view
         # This will be expanded with actual data elements when available
         default_columns = {
-            "analytics": [sanitize_dhis2_column_name(col) for col in ["Period", "OrgUnit"]],  # Base dimensions - data elements added dynamically
-            "dataValueSets": [sanitize_dhis2_column_name(col) for col in ["dataElement", "period", "orgUnit", "value", "storedBy", "created"]],
+            "analytics": [
+                sanitize_dhis2_column_name(col)
+                for col in ["Period", "Period_Start", "OrgUnit"]
+            ],  # Base dimensions - data elements added dynamically
+            "dataValueSets": [
+                sanitize_dhis2_column_name(col)
+                for col in [
+                    "dataElement",
+                    "period",
+                    "period_start",
+                    "orgUnit",
+                    "value",
+                    "storedBy",
+                    "created",
+                ]
+            ],
             "trackedEntityInstances": [sanitize_dhis2_column_name(col) for col in ["trackedEntityInstance", "orgUnit", "trackedEntityType", "attributes"]],
             "events": [sanitize_dhis2_column_name(col) for col in ["event", "program", "orgUnit", "eventDate", "dataValues"]],
             "enrollments": [sanitize_dhis2_column_name(col) for col in ["enrollment", "trackedEntityInstance", "program", "orgUnit", "enrollmentDate"]],
@@ -1218,8 +1347,33 @@ class DHIS2Dialect(default.DefaultDialect):
 
                 # DIMENSIONS (categorical/groupable columns)
                 # Compare with sanitized versions of known dimension columns
-                dimension_cols = [sanitize_dhis2_column_name(c) for c in ["Period", "OrgUnit", "DataElement", "period", "orgUnit", "dataElement"]]
-                if col in dimension_cols:
+                dimension_cols = [
+                    sanitize_dhis2_column_name(c)
+                    for c in [
+                        "Period",
+                        "Period_Start",
+                        "OrgUnit",
+                        "DataElement",
+                        "period",
+                        "period_start",
+                        "orgUnit",
+                        "dataElement",
+                    ]
+                ]
+                if col in [
+                    sanitize_dhis2_column_name("Period_Start"),
+                    sanitize_dhis2_column_name("period_start"),
+                ]:
+                    col_def.update({
+                        "type": types.Date(),
+                        "groupby": True,
+                        "filterable": True,
+                        "verbose_name": "Period Start",
+                        "is_numeric": False,
+                        "python_date_format": "%Y-%m-%d",
+                        "is_dttm": True,
+                    })
+                elif col in dimension_cols:
                     col_def.update({
                         "type": types.String(),  # Always String to prevent numeric conversion
                         "groupby": True,  # Can be used for grouping
@@ -1285,6 +1439,16 @@ class DHIS2Dialect(default.DefaultDialect):
                         "filterable": True,
                         "is_numeric": False,
                         "is_dttm": False,
+                    },
+                    {
+                        "name": sanitize_dhis2_column_name("Period_Start"),
+                        "type": types.Date(),
+                        "nullable": True,
+                        "groupby": True,
+                        "filterable": True,
+                        "is_numeric": False,
+                        "python_date_format": "%Y-%m-%d",
+                        "is_dttm": True,
                     },
                     {
                         "name": sanitize_dhis2_column_name("OrgUnit"),
@@ -3035,7 +3199,7 @@ class DHIS2Cursor:
             # - lowest_level: Data ONLY at the lowest/deepest level (leaf nodes)
             # - children: Data at one level below selected
             # - selected: Data only at selected org units (no LEVEL syntax)
-            if ou_mode == "DESCENDANTS" or data_level_scope in ["all_levels", "lowest_level", "children"]:
+            if ou_mode == "DESCENDANTS" or data_level_scope in ["all_levels", "lowest_level", "children", "grandchildren"]:
                 try:
                     # Fetch org unit levels to know what levels exist
                     org_unit_level_names = self._fetch_org_unit_levels()
@@ -3081,6 +3245,17 @@ class DHIS2Cursor:
                                     level_parts.append(f"LEVEL-{next_level}")
                                     logger.info(f"[DHIS2] Using children scope: LEVEL-{next_level}")
                                     print(f"[DHIS2] Using children scope: LEVEL-{next_level}")
+                            elif data_level_scope == "grandchildren":
+                                # Add two levels below selected (if available)
+                                next_level = min_selected_level + 2
+                                if next_level <= max_level:
+                                    level_parts.append(f"LEVEL-{next_level}")
+                                    logger.info(
+                                        f"[DHIS2] Using grandchildren scope: LEVEL-{next_level}"
+                                    )
+                                    print(
+                                        f"[DHIS2] Using grandchildren scope: LEVEL-{next_level}"
+                                    )
                             else:
                                 # all_levels (default with DESCENDANTS): Add all levels below selected
                                 for level in range(min_selected_level + 1, max_level + 1):
@@ -3568,6 +3743,11 @@ class DHIS2Cursor:
             if sanitized_name in ["Value", "value"]:
                 # Value column is numeric (can be aggregated)
                 col_type = types.Float
+            elif sanitized_name in [
+                sanitize_dhis2_column_name("Period_Start"),
+                sanitize_dhis2_column_name("period_start"),
+            ]:
+                col_type = types.Date
             else:
                 # All other columns are strings (dimensions)
                 col_type = types.String

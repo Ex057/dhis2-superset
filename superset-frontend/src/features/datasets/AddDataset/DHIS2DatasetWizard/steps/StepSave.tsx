@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { styled, SupersetClient, useTheme } from '@superset-ui/core';
+import { useMemo } from 'react';
+import { styled, useTheme } from '@superset-ui/core';
 import {
   Card,
   Row,
@@ -181,7 +181,6 @@ interface StepSaveProps {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   handleSave: () => Promise<void>;
   loading: boolean;
-  databaseId?: number;
 }
 
 export default function WizardStepSave({
@@ -189,11 +188,12 @@ export default function WizardStepSave({
   dataset,
   handleSave,
   loading,
-  databaseId,
 }: StepSaveProps) {
   const theme = useTheme();
-  const [expandedOrgUnitsCount, setExpandedOrgUnitsCount] = useState(0);
-  const [countLoading, setCountLoading] = useState(false);
+  const orgUnitCount = wizardState.orgUnits.length;
+  const isScopeApplied =
+    wizardState.dataLevelScope &&
+    wizardState.dataLevelScope !== 'selected';
 
   const getPeriodType = (periodId: string) => {
     const periodKey = periodId.split('|')[0];
@@ -220,42 +220,8 @@ export default function WizardStepSave({
     return { relative, fixed };
   }, [wizardState.periods]);
 
-  const calculateExpandedCount = useCallback(async () => {
-    if (!databaseId) return;
-    setCountLoading(true);
-    try {
-      const response = await SupersetClient.post({
-        endpoint: `/api/v1/database/${databaseId}/dhis2_expanded_org_units/`,
-        jsonPayload: {
-          org_units: wizardState.orgUnits,
-          include_children: true,
-        },
-      });
-      const count = response.json?.count || wizardState.orgUnits.length;
-      setExpandedOrgUnitsCount(count);
-    } catch {
-      setExpandedOrgUnitsCount(wizardState.orgUnits.length);
-    } finally {
-      setCountLoading(false);
-    }
-  }, [databaseId, wizardState.orgUnits]);
-
-  useEffect(() => {
-    if (
-      wizardState.includeChildren &&
-      wizardState.orgUnits.length > 0 &&
-      databaseId
-    ) {
-      calculateExpandedCount();
-    } else {
-      setExpandedOrgUnitsCount(wizardState.orgUnits.length);
-    }
-  }, [
-    wizardState.orgUnits,
-    wizardState.includeChildren,
-    databaseId,
-    calculateExpandedCount,
-  ]);
+  // Org unit expansion is handled by DHIS2 at query time (ouMode + LEVEL-*),
+  // so we keep only the selected org unit IDs here.
 
   if (loading) {
     return (
@@ -356,13 +322,13 @@ export default function WizardStepSave({
           <Card type="inner" hoverable>
             <Statistic
               title={
-                wizardState.includeChildren
-                  ? 'Organization Units (with children)'
+                isScopeApplied
+                  ? 'Organization Units (scope applied)'
                   : 'Organization Units'
               }
-              value={countLoading ? '...' : expandedOrgUnitsCount}
+              value={orgUnitCount}
               prefix={
-                wizardState.includeChildren ? (
+                isScopeApplied ? (
                   <Icons.WarningOutlined />
                 ) : (
                   <Icons.CheckCircleOutlined />
@@ -370,11 +336,7 @@ export default function WizardStepSave({
               }
               valueStyle={{ color: theme.colorWarning }}
               suffix={
-                wizardState.includeChildren &&
-                !countLoading &&
-                expandedOrgUnitsCount > wizardState.orgUnits.length
-                  ? `(${wizardState.orgUnits.length} selected)`
-                  : ''
+                isScopeApplied ? `(${orgUnitCount} selected)` : ''
               }
             />
           </Card>

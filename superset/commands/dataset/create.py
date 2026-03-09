@@ -137,6 +137,9 @@ class CreateDatasetCommand(CreateMixin, BaseCommand):
                 logger.info(f"[DHIS2] Auto-converted Query Builder dataset to virtual with SQL: {generated_sql[:200]}")
 
         dataset = DatasetDAO.create(attributes=self._properties)
+        if database and database.backend == "dhis2":
+            logger.info("[DHIS2] Skipping metadata fetch on create (will use UI-provided columns)")
+            return dataset
         dataset.fetch_metadata()
         return dataset
 

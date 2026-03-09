@@ -20,7 +20,6 @@ import WizardStepInfo from './steps/StepInfo';
 import WizardStepDataElements from './steps/StepDataElements';
 import WizardStepPeriods from './steps/StepPeriods';
 import WizardStepOrgUnits from './steps/StepOrgUnits';
-import WizardStepColumnPreview from './steps/StepColumnPreview';
 import WizardStepDataPreview from './steps/StepDataPreview';
 import WizardStepSave from './steps/StepSave';
 
@@ -122,11 +121,6 @@ const WIZARD_STEPS = [
     key: 'org_units',
     title: t('Organization Units'),
     description: t('Select OU'),
-  },
-  {
-    key: 'column_preview',
-    title: t('Column Preview'),
-    description: t('Review columns'),
   },
   {
     key: 'data_preview',
@@ -251,13 +245,15 @@ export default function DHIS2DatasetWizard({
 
     setLoading(true);
     try {
+      const dataLevelScope = wizardState.dataLevelScope || 'selected';
       const dhis2Params: Record<string, string> = {
         dx: wizardState.dataElements.join(';'),
         pe: wizardState.periods.join(';'),
         ou: wizardState.orgUnits.join(';'),
       };
 
-      if (wizardState.includeChildren) {
+      if (dataLevelScope !== 'selected') {
+        dhis2Params.dataLevelScope = dataLevelScope;
         dhis2Params.ouMode = 'DESCENDANTS';
       }
 
@@ -409,6 +405,7 @@ export default function DHIS2DatasetWizard({
             wizardState={wizardState}
             updateState={updateWizardState}
             errors={errors}
+            databaseId={dataset?.db?.id}
           />
         );
       case 3:
@@ -421,17 +418,6 @@ export default function DHIS2DatasetWizard({
           />
         );
       case 4:
-        return (
-          <WizardStepColumnPreview
-            wizardState={wizardState}
-            updateState={updateWizardState}
-            databaseId={dataset?.db?.id}
-            dataElements={wizardState.dataElements}
-            periods={wizardState.periods}
-            orgUnits={wizardState.orgUnits}
-          />
-        );
-      case 5:
         console.log(
           '[DHIS2Wizard] Rendering DataPreview step with includeChildren:',
           wizardState.includeChildren,
@@ -448,14 +434,13 @@ export default function DHIS2DatasetWizard({
             includeChildren={wizardState.includeChildren}
           />
         );
-      case 6:
+      case 5:
         return (
           <WizardStepSave
             wizardState={wizardState}
             dataset={dataset}
             handleSave={handleSave}
             loading={loading}
-            databaseId={dataset?.db?.id}
           />
         );
       default:

@@ -113,6 +113,7 @@ interface OrgUnitLevel {
 interface OrgUnitGroup {
   id: string;
   displayName: string;
+  organisationUnits?: OrgUnit[];
 }
 
 export default function WizardStepOrgUnits({
@@ -219,17 +220,19 @@ export default function WizardStepOrgUnits({
         children: [],
       };
       map.set(unit.id, node);
+    });
 
+    units.forEach(unit => {
+      const node = map.get(unit.id);
+      if (!node) return;
       if (unit.parentId) {
         const parent = map.get(unit.parentId);
         if (parent) {
           parent.children.push(node);
-        } else {
-          roots.push(node);
+          return;
         }
-      } else {
-        roots.push(node);
       }
+      roots.push(node);
     });
 
     return roots;
@@ -237,6 +240,17 @@ export default function WizardStepOrgUnits({
 
   const filteredUnits = useMemo(() => {
     let filtered = orgUnits;
+
+    if (selectedGroup) {
+      const group = orgUnitGroups.find(g => g.id === selectedGroup) as
+        | (OrgUnitGroup & { organisationUnits?: OrgUnit[] })
+        | undefined;
+      const members = group?.organisationUnits || [];
+      const memberIds = new Set(members.map(m => m.id));
+      if (memberIds.size > 0) {
+        filtered = filtered.filter(unit => memberIds.has(unit.id));
+      }
+    }
 
     if (searchText) {
       filtered = filtered.filter(unit =>
@@ -251,7 +265,15 @@ export default function WizardStepOrgUnits({
     }
 
     return filtered;
-  }, [orgUnits, searchText, selectedLevel]);
+  }, [orgUnits, orgUnitGroups, searchText, selectedGroup, selectedLevel]);
+
+  useEffect(() => {
+    setUserOrgUnit(wizardState.orgUnits.includes('USER_ORGUNIT'));
+    setUserSubUnits(wizardState.orgUnits.includes('USER_ORGUNIT_CHILDREN'));
+    setUserSubX2Units(
+      wizardState.orgUnits.includes('USER_ORGUNIT_GRANDCHILDREN'),
+    );
+  }, [wizardState.orgUnits]);
 
   const treeData = useMemo(() => buildTreeData(filteredUnits), [filteredUnits]);
 
@@ -506,6 +528,8 @@ export default function WizardStepOrgUnits({
                 value={selectedLevel}
                 onChange={value => setSelectedLevel(value as string | null)}
                 options={levelOptions}
+                showSearch
+                optionFilterProps={['label']}
                 styles={{ root: { width: '100%' } }}
               />
             </div>
@@ -519,6 +543,8 @@ export default function WizardStepOrgUnits({
                 value={selectedGroup}
                 onChange={value => setSelectedGroup(value as string | null)}
                 options={groupOptions}
+                showSearch
+                optionFilterProps={['label']}
                 styles={{ root: { width: '100%' } }}
               />
             </div>
@@ -621,9 +647,13 @@ export default function WizardStepOrgUnits({
           >
             <Text>
               <strong>Data scope:</strong>{' '}
-              {wizardState.includeChildren
-                ? 'Include children (descendants)'
-                : 'Selected units only'}
+              {wizardState.dataLevelScope === 'children'
+                ? 'Include children (one level down)'
+                : wizardState.dataLevelScope === 'grandchildren'
+                  ? 'Include grandchildren (two levels down)'
+                  : wizardState.dataLevelScope === 'all_levels'
+                    ? 'All levels (facility level)'
+                    : 'Selected units only'}
             </Text>
           </div>
         </SelectedSummary>
@@ -634,7 +664,12 @@ export default function WizardStepOrgUnits({
           type="primary"
           danger
           block
-          onClick={() => updateState({ orgUnits: [] })}
+          onClick={() => {
+            setUserOrgUnit(false);
+            setUserSubUnits(false);
+            setUserSubX2Units(false);
+            updateState({ orgUnits: [] });
+          }}
         >
           Clear All
         </Button>

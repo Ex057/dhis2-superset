@@ -226,6 +226,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         "dhis2_preview_columns",
         "dhis2_preview_data",
         "dhis2_chart_data",
+        "dhis2_expanded_org_units",
     }
 
     resource_name = "database"
@@ -2231,6 +2232,13 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         level = request.args.get("level")  # Optional level filter for org units
         parent_ids = request.args.getlist("parent_ids")  # Optional parent org unit IDs to filter children
         period_type = request.args.get("periodType", "YEARLY")  # For periods
+        period_year_raw = request.args.get("year")
+        period_year = None
+        if period_year_raw:
+            try:
+                period_year = int(period_year_raw)
+            except (TypeError, ValueError):
+                period_year = None
         table_name = request.args.get("table")  # Optional table context for filtering
         search_term = request.args.get("search", "")
         
@@ -2243,7 +2251,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
         # Handle periods specially - generate fixed periods
         if metadata_type == "periods":
-            return self._generate_fixed_periods(period_type)
+            return self._generate_fixed_periods(period_type, period_year)
 
         # Handle organisationUnitLevels specially - different endpoint structure
         if metadata_type == "organisationUnitLevels":
@@ -2436,7 +2444,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             logger.exception("Failed to fetch DHIS2 metadata")
             return self.response_500(message=str(ex))
 
-    def _generate_fixed_periods(self, period_type: str) -> Response:
+    def _generate_fixed_periods(self, period_type: str, year: int | None = None) -> Response:
         """Generate fixed periods based on period type.
 
         Args:
@@ -2449,146 +2457,275 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         
         current_year = datetime.now().year
         current_month = datetime.now().month
-        current_day = datetime.now().day
         current_date = datetime.now().date()
+        target_year = year or current_year
         periods = []
+        month_labels = [
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        ]
 
         if period_type == "DAILY":
-            # Generate last 365 days
-            for i in range(364, -1, -1):
-                d = current_date - timedelta(days=i)
-                periods.append({
-                    "id": d.strftime("%Y%m%d"),
-                    "displayName": d.strftime("%Y-%m-%d"),
-                    "type": "DAILY"
-                })
+            if year:
+                start_date = datetime(target_year, 1, 1).date()
+                end_date = datetime(target_year, 12, 31).date()
+                d = start_date
+                while d <= end_date:
+                    periods.append({
+                        "id": d.strftime("%Y%m%d"),
+                        "displayName": d.strftime("%b %d, %Y"),
+                        "type": "DAILY",
+                    })
+                    d += timedelta(days=1)
+            else:
+                # Generate last 365 days
+                for i in range(364, -1, -1):
+                    d = current_date - timedelta(days=i)
+                    periods.append({
+                        "id": d.strftime("%Y%m%d"),
+                        "displayName": d.strftime("%b %d, %Y"),
+                        "type": "DAILY"
+                    })
 
         elif period_type == "WEEKLY" or period_type.startswith("WEEKLY"):
-            # Generate weeks for last 52 weeks
-            from datetime import date
-            
-            # Map weekly types to their start day offset
-            # WEEKLY = Monday, WEEKLY_WED = Wednesday, WEEKLY_THU = Thursday, etc.
-            weekday_offsets = {
-                "WEEKLY": 0,      # Monday
-                "WEEKLY_WED": 2,  # Wednesday
-                "WEEKLY_THU": 3,  # Thursday
-                "WEEKLY_SAT": 5,  # Saturday
-                "WEEKLY_SUN": 6,  # Sunday
+            # Map weekly types to their ID suffix
+            suffix_map = {
+                "WEEKLY": "",
+                "WEEKLY_WED": "Wed",
+                "WEEKLY_THU": "Thu",
+                "WEEKLY_SAT": "Sat",
+                "WEEKLY_SUN": "Sun",
             }
-            
-            start_day = weekday_offsets.get(period_type, 0)
-            
-            for week_offset in range(51, -1, -1):
-                week_start = current_date - timedelta(days=current_date.weekday() - start_day + 7 * week_offset)
-                iso_year, iso_week, iso_day = week_start.isocalendar()
-                periods.append({
-                    "id": f"{iso_year}W{iso_week:02d}",
-                    "displayName": f"W{iso_week} {iso_year}",
-                    "type": period_type
-                })
+            suffix = suffix_map.get(period_type, "")
+            if year:
+                for week in range(1, 53):
+                    periods.append({
+                        "id": f"{target_year}{suffix}W{week}",
+                        "displayName": f"Week {week} {target_year}" + (f" ({suffix} start)" if suffix else ""),
+                        "type": period_type,
+                    })
+            else:
+                # Generate weeks for last 52 weeks
+                for week_offset in range(51, -1, -1):
+                    week_start = current_date - timedelta(days=current_date.weekday() + 7 * week_offset)
+                    iso_year, iso_week, _ = week_start.isocalendar()
+                    periods.append({
+                        "id": f"{iso_year}{suffix}W{iso_week}",
+                        "displayName": f"Week {iso_week} {iso_year}" + (f" ({suffix} start)" if suffix else ""),
+                        "type": period_type,
+                    })
 
         elif period_type == "BI_WEEKLY":
-            # Generate bi-weeks for last 26 bi-weeks
-            for biweek_offset in range(25, -1, -1):
-                biweek_start = current_date - timedelta(days=current_date.weekday() + 14 * biweek_offset)
-                iso_year, iso_week, iso_day = biweek_start.isocalendar()
-                periods.append({
-                    "id": f"{iso_year}BW{(iso_week // 2):02d}",
-                    "displayName": f"BW{(iso_week // 2)} {iso_year}",
-                    "type": "BI_WEEKLY"
-                })
+            # Generate bi-weeks (DHIS2: YYYYBiW##)
+            if year:
+                for biweek in range(1, 27):
+                    periods.append({
+                        "id": f"{target_year}BiW{biweek}",
+                        "displayName": f"Bi-week {biweek} {target_year}",
+                        "type": "BI_WEEKLY",
+                    })
+            else:
+                for biweek_offset in range(25, -1, -1):
+                    biweek_start = current_date - timedelta(days=current_date.weekday() + 14 * biweek_offset)
+                    iso_year, iso_week, _ = biweek_start.isocalendar()
+                    biweek = max(1, (iso_week + 1) // 2)
+                    periods.append({
+                        "id": f"{iso_year}BiW{biweek}",
+                        "displayName": f"Bi-week {biweek} {iso_year}",
+                        "type": "BI_WEEKLY",
+                    })
 
         elif period_type == "FOUR_WEEKLY":
             # Generate four-weekly periods for last 13 four-weeks
-            for fw_offset in range(12, -1, -1):
-                fw_start = current_date - timedelta(days=current_date.weekday() + 28 * fw_offset)
-                iso_year, iso_week, iso_day = fw_start.isocalendar()
-                periods.append({
-                    "id": f"{iso_year}FW{(iso_week // 4):02d}",
-                    "displayName": f"FW{(iso_week // 4)} {iso_year}",
-                    "type": "FOUR_WEEKLY"
-                })
+            if year:
+                for fw in range(1, 14):
+                    periods.append({
+                        "id": f"{target_year}FW{fw}",
+                        "displayName": f"Four-week {fw} {target_year}",
+                        "type": "FOUR_WEEKLY",
+                    })
+            else:
+                for fw_offset in range(12, -1, -1):
+                    fw_start = current_date - timedelta(days=current_date.weekday() + 28 * fw_offset)
+                    iso_year, iso_week, _ = fw_start.isocalendar()
+                    fw = max(1, (iso_week + 3) // 4)
+                    periods.append({
+                        "id": f"{iso_year}FW{fw}",
+                        "displayName": f"Four-week {fw} {iso_year}",
+                        "type": "FOUR_WEEKLY",
+                    })
 
         elif period_type == "MONTHLY":
-            # Generate months from January 2022 to present
-            month_names = [
-                "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December"
-            ]
-            for year in range(2022, current_year + 1):
-                max_month = current_month if year == current_year else 12
-                for month in range(1, max_month + 1):
-                    month_id = f"{year}{month:02d}"
+            if year:
+                for month in range(1, 13):
+                    month_id = f"{target_year}{month:02d}"
                     periods.append({
                         "id": month_id,
-                        "displayName": f"{month_names[month-1]} {year}",
-                        "type": "MONTHLY"
+                        "displayName": f"{month_labels[month-1]} {target_year}",
+                        "type": "MONTHLY",
                     })
-            periods.reverse()
+            else:
+                # Generate months from January 2022 to present
+                for y in range(2022, current_year + 1):
+                    max_month = current_month if y == current_year else 12
+                    for month in range(1, max_month + 1):
+                        month_id = f"{y}{month:02d}"
+                        periods.append({
+                            "id": month_id,
+                            "displayName": f"{month_labels[month-1]} {y}",
+                            "type": "MONTHLY",
+                        })
+                periods.reverse()
 
         elif period_type == "BI_MONTHLY":
             # Generate bi-months
-            for year in range(2022, current_year + 1):
-                for bimonth in range(1, 7):
-                    month_start = (bimonth - 1) * 2 + 1
-                    month_end = bimonth * 2
-                    if year < current_year or month_end <= current_month:
-                        periods.append({
-                            "id": f"{year}{bimonth:02d}B",
-                            "displayName": f"BM{bimonth} {year}",
-                            "type": "BI_MONTHLY"
-                        })
-            periods.reverse()
+            if year:
+                start_months = [1, 3, 5, 7, 9, 11]
+                for start_month in start_months:
+                    end_month = min(start_month + 1, 12)
+                    periods.append({
+                        "id": f"{target_year}{start_month:02d}B",
+                        "displayName": f"{month_labels[start_month - 1]}-{month_labels[end_month - 1]} {target_year}",
+                        "type": "BI_MONTHLY",
+                    })
+            else:
+                for y in range(2022, current_year + 1):
+                    for start_month in [1, 3, 5, 7, 9, 11]:
+                        end_month = start_month + 1
+                        if y < current_year or end_month <= current_month:
+                            periods.append({
+                                "id": f"{y}{start_month:02d}B",
+                                "displayName": f"{month_labels[start_month - 1]}-{month_labels[end_month - 1]} {y}",
+                                "type": "BI_MONTHLY",
+                            })
+                periods.reverse()
 
         elif period_type == "QUARTERLY":
-            # Generate quarters for last 3 years
-            for year in range(current_year - 2, current_year + 1):
+            if year:
                 for quarter in range(1, 5):
-                    quarter_id = f"{year}Q{quarter}"
+                    quarter_id = f"{target_year}Q{quarter}"
                     periods.append({
                         "id": quarter_id,
-                        "displayName": f"Q{quarter} {year}",
-                        "type": "QUARTERLY"
+                        "displayName": f"Q{quarter} {target_year}",
+                        "type": "QUARTERLY",
                     })
+            else:
+                # Generate quarters for last 3 years
+                for y in range(current_year - 2, current_year + 1):
+                    for quarter in range(1, 5):
+                        quarter_id = f"{y}Q{quarter}"
+                        periods.append({
+                            "id": quarter_id,
+                            "displayName": f"Q{quarter} {y}",
+                            "type": "QUARTERLY"
+                        })
 
         elif period_type == "SIX_MONTHLY":
             # Generate six-months
-            for year in range(current_year - 4, current_year + 1):
+            if year:
                 for half in range(1, 3):
+                    label = "Jan-Jun" if half == 1 else "Jul-Dec"
                     periods.append({
-                        "id": f"{year}S{half}",
-                        "displayName": f"S{half} {year}",
-                        "type": "SIX_MONTHLY"
+                        "id": f"{target_year}S{half}",
+                        "displayName": f"{label} {target_year}",
+                        "type": "SIX_MONTHLY",
                     })
+            else:
+                for y in range(current_year - 4, current_year + 1):
+                    for half in range(1, 3):
+                        label = "Jan-Jun" if half == 1 else "Jul-Dec"
+                        periods.append({
+                            "id": f"{y}S{half}",
+                            "displayName": f"{label} {y}",
+                            "type": "SIX_MONTHLY",
+                        })
 
         elif period_type == "SIX_MONTHLY_APR":
             # Generate six-months starting April
-            for year in range(current_year - 4, current_year + 1):
+            if year:
                 for half in range(1, 3):
+                    label = "Apr-Sep" if half == 1 else f"Oct {target_year} - Mar {target_year + 1}"
                     periods.append({
-                        "id": f"{year}SA{half}",
-                        "displayName": f"SA{half} {year}",
-                        "type": "SIX_MONTHLY_APR"
+                        "id": f"{target_year}AprilS{half}",
+                        "displayName": f"{label}",
+                        "type": "SIX_MONTHLY_APR",
                     })
+            else:
+                for y in range(current_year - 4, current_year + 1):
+                    for half in range(1, 3):
+                        label = "Apr-Sep" if half == 1 else f"Oct {y} - Mar {y + 1}"
+                        periods.append({
+                            "id": f"{y}AprilS{half}",
+                            "displayName": f"{label}",
+                            "type": "SIX_MONTHLY_APR",
+                        })
 
         elif period_type == "YEARLY":
             # Generate last 10 years
-            for year in range(current_year - 9, current_year + 1):
+            if year:
                 periods.append({
-                    "id": str(year),
-                    "displayName": str(year),
-                    "type": "YEARLY"
+                    "id": str(target_year),
+                    "displayName": str(target_year),
+                    "type": "YEARLY",
                 })
+            else:
+                for y in range(current_year - 9, current_year + 1):
+                    periods.append({
+                        "id": str(y),
+                        "displayName": str(y),
+                        "type": "YEARLY"
+                    })
 
         elif period_type in ["FINANCIAL_APR", "FINANCIAL_JUL", "FINANCIAL_OCT", "FINANCIAL_NOV"]:
             # Generate financial years
-            for year in range(current_year - 9, current_year + 1):
+            suffix_map = {
+                "FINANCIAL_APR": "April",
+                "FINANCIAL_JUL": "July",
+                "FINANCIAL_OCT": "Oct",
+                "FINANCIAL_NOV": "Nov",
+            }
+            suffix_label = suffix_map.get(period_type, "April")
+            if year:
+                label = (
+                    f"Apr {target_year} - Mar {target_year + 1}"
+                    if period_type == "FINANCIAL_APR"
+                    else f"Jul {target_year} - Jun {target_year + 1}"
+                    if period_type == "FINANCIAL_JUL"
+                    else f"Oct {target_year} - Sep {target_year + 1}"
+                    if period_type == "FINANCIAL_OCT"
+                    else f"Nov {target_year} - Oct {target_year + 1}"
+                )
                 periods.append({
-                    "id": f"FY{year}",
-                    "displayName": f"FY {year}",
-                    "type": period_type
+                    "id": f"{target_year}{suffix_label}",
+                    "displayName": label,
+                    "type": period_type,
                 })
+            else:
+                for y in range(current_year - 9, current_year + 1):
+                    label = (
+                        f"Apr {y} - Mar {y + 1}"
+                        if period_type == "FINANCIAL_APR"
+                        else f"Jul {y} - Jun {y + 1}"
+                        if period_type == "FINANCIAL_JUL"
+                        else f"Oct {y} - Sep {y + 1}"
+                        if period_type == "FINANCIAL_OCT"
+                        else f"Nov {y} - Oct {y + 1}"
+                    )
+                    periods.append({
+                        "id": f"{y}{suffix_label}",
+                        "displayName": label,
+                        "type": period_type,
+                    })
 
         return self.response(200, result=periods)
 
@@ -2700,7 +2837,7 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
 
             # Fetch organisation unit groups
             params = {
-                "fields": "id,displayName,name",
+                "fields": "id,displayName,name,organisationUnits[id,displayName,level,parent[id]]",
                 "paging": "false",
             }
 
@@ -3829,6 +3966,98 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
             logger.exception("Failed to generate DHIS2 column preview")
             return self.response_500(message=str(ex))
 
+    @expose("/<int:pk>/dhis2_expanded_org_units/", methods=("POST",))
+    @safe
+    @statsd_metrics
+    @event_logger.log_this_with_context(
+        action=lambda self, *args, **kwargs: "DatabaseRestApi.dhis2_expanded_org_units",
+        log_to_statsd=False,
+    )
+    def dhis2_expanded_org_units(self, pk: int) -> Response:
+        """Return count of org units after expanding descendants.
+        ---
+        post:
+          summary: Expand DHIS2 org units to include descendants (count only)
+          parameters:
+          - in: path
+            name: pk
+            schema:
+              type: integer
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    org_units:
+                      type: array
+                      items:
+                        oneOf:
+                        - type: string
+                        - type: object
+                          properties:
+                            id:
+                              type: string
+                    include_children:
+                      type: boolean
+          responses:
+            200:
+              description: Expanded org unit count
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+        """
+        from sqlalchemy.engine.url import make_url
+        from superset.databases.dhis2_preview_utils import fetch_org_unit_descendants
+
+        database = DatabaseDAO.find_by_id(pk)
+        if not database:
+            return self.response_404()
+        if database.backend != "dhis2":
+            return self.response_400(message="Database is not a DHIS2 connection")
+
+        payload = request.get_json(silent=True) or {}
+        raw_org_units = payload.get("org_units") or []
+        include_children = bool(payload.get("include_children"))
+
+        ou_ids: list[str] = []
+        for ou in raw_org_units:
+            if isinstance(ou, dict):
+                ou_id = ou.get("id")
+                if ou_id:
+                    ou_ids.append(str(ou_id))
+            else:
+                ou_ids.append(str(ou))
+
+        if not ou_ids:
+            return self.response(200, count=0)
+
+        if not include_children:
+            return self.response(200, count=len(ou_ids))
+
+        try:
+            uri = make_url(database.sqlalchemy_uri_decrypted)
+            api_path = uri.database or "/api"
+            if not api_path.startswith("/"):
+                api_path = f"/{api_path}"
+            base_url = f"https://{uri.host}{api_path}"
+
+            if not uri.username and uri.password:
+                auth = None
+            else:
+                auth = (uri.username, uri.password) if uri.username else None
+
+            expanded_ids = fetch_org_unit_descendants(base_url, auth, ou_ids)
+            return self.response(200, count=len(expanded_ids))
+        except Exception as ex:
+            logger.exception("Failed to expand DHIS2 org units")
+            return self.response_500(message=str(ex))
+
     @expose("/<int:pk>/dhis2_preview/data/", methods=("POST",))
     @safe
     @statsd_metrics
@@ -4611,6 +4840,3 @@ class DatabaseRestApi(BaseSupersetModelRestApi):
         except Exception as ex:
             logger.exception("Failed to generate DHIS2 chart data")
             return self.response_500(message=str(ex))
-
-
-

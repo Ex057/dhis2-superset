@@ -293,15 +293,36 @@ export default function WizardStepDataElements({
     }
   };
 
+  const selectedGroupMemberIds = useMemo(() => {
+    if (!selectedGroup) {
+      return null;
+    }
+    const group = groups.find((g: any) => g.id === selectedGroup);
+    const members = group?.members || [];
+    const ids = new Set<string>(
+      members
+        .map((m: any) => m?.id)
+        .filter((id: string | undefined) => !!id),
+    );
+    return ids.size > 0 ? ids : null;
+  }, [groups, selectedGroup]);
+
   const filteredElements = useMemo(() => {
     let filtered = dataElements;
 
-    filtered = filtered.filter((el: any) =>
-      el.displayName.toLowerCase().includes(searchText.toLowerCase()),
-    );
+    if (selectedGroupMemberIds) {
+      filtered = filtered.filter((el: any) => selectedGroupMemberIds.has(el.id));
+    }
+
+    if (searchText.trim()) {
+      const needle = searchText.toLowerCase();
+      filtered = filtered.filter((el: any) =>
+        (el.displayName || '').toLowerCase().includes(needle),
+      );
+    }
 
     return filtered;
-  }, [dataElements, searchText]);
+  }, [dataElements, searchText, selectedGroupMemberIds]);
 
   const groupedElements = useMemo(() => {
     const grouped: { [key: string]: any[] } = {};
@@ -370,6 +391,8 @@ export default function WizardStepDataElements({
                 value={selectedGroup || undefined}
                 onChange={setSelectedGroup}
                 allowClear
+                showSearch
+                optionFilterProp="label"
                 style={{ flex: 1, minWidth: 150 }}
                 options={relevantGroups
                   .filter((g: any) => g.type === 'dataElements')
@@ -409,6 +432,8 @@ export default function WizardStepDataElements({
               value={selectedGroup || undefined}
               onChange={setSelectedGroup}
               allowClear
+              showSearch
+              optionFilterProp="label"
               style={{ flex: 1, minWidth: 150 }}
               options={relevantGroups
                 .filter((g: any) => g.type === 'indicators')

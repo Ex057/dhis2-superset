@@ -91,6 +91,8 @@ export interface PublicPageSidebarConfig {
   backgroundColor: string;
   /** Sidebar text color */
   textColor?: string;
+  /** Sidebar accent color */
+  accentColor?: string;
   /** Border style */
   borderStyle: string;
   /** Title to display above dashboard list */
@@ -176,15 +178,16 @@ export const DEFAULT_PUBLIC_PAGE_CONFIG: PublicPageLayoutConfig = {
     enabled: true,
     width: 280,
     position: 'left',
-    backgroundColor: '#ffffff',
-    textColor: '#1f1f1f',
-    borderStyle: '1px solid #f0f0f0',
+    backgroundColor: '#0f4c3a',
+    textColor: '#ecfdf5',
+    accentColor: '#34d399',
+    borderStyle: '1px solid rgba(15, 76, 58, 0.35)',
     title: 'Categories',
     collapsibleOnMobile: true,
     mobileBreakpoint: 768,
   },
   content: {
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f0f7f4',
     padding: '0',
     showWelcomeMessage: true,
     welcomeTitle: 'Welcome',

@@ -75,32 +75,41 @@ class DHIS2Preloader:
         logger.info("[DHIS2 Preloader] ==================== Starting Data Preload ====================")
 
         try:
-            # Get all DHIS2 databases
-            dhis2_databases = self._get_dhis2_databases()
+            # Ensure we have an application context before touching the DB
+            from superset import app as superset_app
 
-            if not dhis2_databases:
-                logger.warning("[DHIS2 Preloader] No DHIS2 databases found")
-                return
+            with superset_app.app_context():
+                # Get all DHIS2 databases
+                dhis2_databases = self._get_dhis2_databases()
 
-            logger.info(f"[DHIS2 Preloader] Found {len(dhis2_databases)} DHIS2 database(s)")
+                if not dhis2_databases:
+                    logger.warning("[DHIS2 Preloader] No DHIS2 databases found")
+                    return
 
-            for db in dhis2_databases:
-                try:
-                    self._preload_database(db)
-                except Exception as e:
-                    logger.error(f"[DHIS2 Preloader] Error preloading database {db['name']}: {e}")
-                    continue
+                logger.info(f"[DHIS2 Preloader] Found {len(dhis2_databases)} DHIS2 database(s)")
 
-            elapsed = time.time() - start_time
-            logger.info(f"[DHIS2 Preloader] ==================== Preload Complete ({elapsed:.1f}s) ====================")
+                for db in dhis2_databases:
+                    try:
+                        self._preload_database(db)
+                    except Exception as e:
+                        logger.error(f"[DHIS2 Preloader] Error preloading database {db['name']}: {e}")
+                        continue
 
-            # Log cache stats
-            from superset.utils.dhis2_cache import get_dhis2_cache
-            cache = get_dhis2_cache()
-            stats = cache.stats()
-            logger.info(f"[DHIS2 Preloader] Cache Stats: {stats['active_entries']} entries, "
-                       f"{stats['size_mb']:.1f}/{stats['max_size_mb']:.1f} MB "
-                       f"({stats['usage_percent']:.1f}% used)")
+                elapsed = time.time() - start_time
+                logger.info(
+                    f"[DHIS2 Preloader] ==================== Preload Complete ({elapsed:.1f}s) ===================="
+                )
+
+                # Log cache stats
+                from superset.utils.dhis2_cache import get_dhis2_cache
+
+                cache = get_dhis2_cache()
+                stats = cache.stats()
+                logger.info(
+                    f"[DHIS2 Preloader] Cache Stats: {stats['active_entries']} entries, "
+                    f"{stats['size_mb']:.1f}/{stats['max_size_mb']:.1f} MB "
+                    f"({stats['usage_percent']:.1f}% used)"
+                )
 
         except Exception as e:
             logger.exception(f"[DHIS2 Preloader] Fatal error during preload: {e}")

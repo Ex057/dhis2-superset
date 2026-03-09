@@ -244,6 +244,164 @@ const RELATIVE_PERIOD_TYPE_OPTIONS = [
   { value: 'FINANCIAL', label: 'Financial Year' },
 ];
 
+const MONTH_LABELS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+const buildLocalFixedPeriods = (periodType: string, year: number): Period[] => {
+  switch (periodType) {
+    case 'DAILY': {
+      const periods: Period[] = [];
+      const date = new Date(year, 0, 1);
+      while (date.getFullYear() === year) {
+        const month = date.getMonth() + 1;
+        const day = date.getDate();
+        const id = `${year}${String(month).padStart(2, '0')}${String(day).padStart(2, '0')}`;
+        periods.push({
+          id,
+          displayName: `${MONTH_LABELS[month - 1]} ${day}, ${year}`,
+          type: 'DAILY',
+        });
+        date.setDate(day + 1);
+      }
+      return periods;
+    }
+    case 'WEEKLY':
+    case 'WEEKLY_WED':
+    case 'WEEKLY_THU':
+    case 'WEEKLY_SAT':
+    case 'WEEKLY_SUN': {
+      const suffixMap: Record<string, string> = {
+        WEEKLY: '',
+        WEEKLY_WED: 'Wed',
+        WEEKLY_THU: 'Thu',
+        WEEKLY_SAT: 'Sat',
+        WEEKLY_SUN: 'Sun',
+      };
+      const suffix = suffixMap[periodType] || '';
+      return Array.from({ length: 52 }, (_, index) => {
+        const week = index + 1;
+        return {
+          id: `${year}${suffix}W${week}`,
+          displayName:
+            `Week ${week} ${year}` + (suffix ? ` (${suffix} start)` : ''),
+          type: periodType,
+        };
+      });
+    }
+    case 'BI_WEEKLY':
+      return Array.from({ length: 26 }, (_, index) => {
+        const biWeek = index + 1;
+        return {
+          id: `${year}BiW${biWeek}`,
+          displayName: `Bi-week ${biWeek} ${year}`,
+          type: 'BI_WEEKLY',
+        };
+      });
+    case 'FOUR_WEEKLY':
+      return Array.from({ length: 13 }, (_, index) => {
+        const fw = index + 1;
+        return {
+          id: `${year}FW${fw}`,
+          displayName: `Four-week ${fw} ${year}`,
+          type: 'FOUR_WEEKLY',
+        };
+      });
+    case 'MONTHLY':
+      return MONTH_LABELS.map((label, index) => {
+        const month = index + 1;
+        return {
+          id: `${year}${String(month).padStart(2, '0')}`,
+          displayName: `${label} ${year}`,
+          type: 'MONTHLY',
+        };
+      });
+    case 'BI_MONTHLY': {
+      const startMonths = [1, 3, 5, 7, 9, 11];
+      return startMonths.map(startMonth => {
+        const endMonth = Math.min(startMonth + 1, 12);
+        return {
+          id: `${year}${String(startMonth).padStart(2, '0')}B`,
+          displayName: `${MONTH_LABELS[startMonth - 1]}-${MONTH_LABELS[endMonth - 1]} ${year}`,
+          type: 'BI_MONTHLY',
+        };
+      });
+    }
+    case 'QUARTERLY':
+      return [1, 2, 3, 4].map(quarter => ({
+        id: `${year}Q${quarter}`,
+        displayName: `Q${quarter} ${year}`,
+        type: 'QUARTERLY',
+      }));
+    case 'SIX_MONTHLY':
+      return [1, 2].map(half => ({
+        id: `${year}S${half}`,
+        displayName: half === 1 ? `Jan-Jun ${year}` : `Jul-Dec ${year}`,
+        type: 'SIX_MONTHLY',
+      }));
+    case 'SIX_MONTHLY_APR':
+      return [1, 2].map(half => ({
+        id: `${year}AprilS${half}`,
+        displayName:
+          half === 1 ? `Apr-Sep ${year}` : `Oct ${year} - Mar ${year + 1}`,
+        type: 'SIX_MONTHLY_APR',
+      }));
+    case 'YEARLY':
+      return [
+        {
+          id: String(year),
+          displayName: String(year),
+          type: 'YEARLY',
+        },
+      ];
+    case 'FINANCIAL_APR':
+      return [
+        {
+          id: `${year}April`,
+          displayName: `Apr ${year} - Mar ${year + 1}`,
+          type: 'FINANCIAL_APR',
+        },
+      ];
+    case 'FINANCIAL_JUL':
+      return [
+        {
+          id: `${year}July`,
+          displayName: `Jul ${year} - Jun ${year + 1}`,
+          type: 'FINANCIAL_JUL',
+        },
+      ];
+    case 'FINANCIAL_OCT':
+      return [
+        {
+          id: `${year}Oct`,
+          displayName: `Oct ${year} - Sep ${year + 1}`,
+          type: 'FINANCIAL_OCT',
+        },
+      ];
+    case 'FINANCIAL_NOV':
+      return [
+        {
+          id: `${year}Nov`,
+          displayName: `Nov ${year} - Oct ${year + 1}`,
+          type: 'FINANCIAL_NOV',
+        },
+      ];
+    default:
+      return [];
+  }
+};
+
 export default function WizardStepPeriods({
   wizardState,
   updateState,
@@ -278,31 +436,36 @@ export default function WizardStepPeriods({
   }, [fixedPeriodType, fixedYear, databaseId]);
 
   const fetchFixedPeriods = async () => {
-    if (!databaseId) return;
+    if (!databaseId) {
+      setFixedPeriods(buildLocalFixedPeriods(fixedPeriodType, fixedYear));
+      return;
+    }
 
     setLoadingPeriods(true);
     try {
       console.log('[StepPeriods] Fetching fixed periods:', { fixedPeriodType, fixedYear, databaseId });
       const response = await SupersetClient.get({
-        endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/periods?periodType=${fixedPeriodType}&year=${fixedYear}`,
+        endpoint: `/api/v1/database/${databaseId}/dhis2_metadata/?type=periods&periodType=${fixedPeriodType}&year=${fixedYear}`,
       });
 
       const periods = response.json?.result || [];
       console.log('[StepPeriods] Received periods:', { count: periods.length, periodType: fixedPeriodType, year: fixedYear });
 
-      if (fixedPeriodType === 'MONTHLY' || fixedPeriodType === 'QUARTERLY') {
-        const yearPeriods = periods.filter((p: Period) => {
-          const periodYear = parseInt(p.id.substring(0, 4), 10);
-          return periodYear === fixedYear;
+      if (periods.length === 0) {
+        const fallback = buildLocalFixedPeriods(fixedPeriodType, fixedYear);
+        console.warn('[StepPeriods] Empty response; using local fixed periods', {
+          fixedPeriodType,
+          fixedYear,
+          count: fallback.length,
         });
-        console.log('[StepPeriods] Filtered periods for year:', { year: fixedYear, filteredCount: yearPeriods.length });
-        setFixedPeriods(yearPeriods);
-      } else {
-        setFixedPeriods(periods);
+        setFixedPeriods(fallback);
+        return;
       }
+
+      setFixedPeriods(periods);
     } catch (error) {
       console.error('[StepPeriods] Error fetching periods:', error);
-      setFixedPeriods([]);
+      setFixedPeriods(buildLocalFixedPeriods(fixedPeriodType, fixedYear));
     } finally {
       setLoadingPeriods(false);
     }
@@ -450,21 +613,18 @@ export default function WizardStepPeriods({
                     </div>
                   </Col>
 
-                  {(fixedPeriodType === 'MONTHLY' ||
-                    fixedPeriodType === 'QUARTERLY') && (
-                    <Col xs={24} sm={12}>
-                      <div>
-                        <SectionTitle>Year</SectionTitle>
-                        <InputNumber
-                          value={fixedYear}
-                          onChange={value => setFixedYear(value || currentYear)}
-                          min={currentYear - 9}
-                          max={currentYear + 1}
-                          style={{ width: '100%' }}
-                        />
-                      </div>
-                    </Col>
-                  )}
+                  <Col xs={24} sm={12}>
+                    <div>
+                      <SectionTitle>Year</SectionTitle>
+                      <InputNumber
+                        value={fixedYear}
+                        onChange={value => setFixedYear(value || currentYear)}
+                        min={currentYear - 20}
+                        max={currentYear + 5}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+                  </Col>
                 </ControlsRow>
 
                 {loadingPeriods ? (

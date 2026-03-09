@@ -140,4 +140,3 @@ class PublicPageRestApi(BaseApi):
             else:
                 result[key] = value
         return result
-

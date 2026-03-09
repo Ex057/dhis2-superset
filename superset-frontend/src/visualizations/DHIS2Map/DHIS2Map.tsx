@@ -504,11 +504,21 @@ function DHIS2Map({
   isDHIS2Dataset = false,
   boundaryLoadMethod = 'geoFeatures',
 }: DHIS2MapProps): ReactElement {
+  // Ensure we always have at least one boundary level to fetch.
+  // Some older saved charts may not include boundary_levels in formData.
+  const effectiveBoundaryLevels = useMemo(() => {
+    if (Array.isArray(boundaryLevels) && boundaryLevels.length > 0) {
+      return boundaryLevels;
+    }
+    return [2];
+  }, [boundaryLevels]);
+
   // Debug logging for props
   // eslint-disable-next-line no-console
   console.log('[DHIS2Map] Component rendered with props:', {
     databaseId,
     boundaryLevels,
+    effectiveBoundaryLevels,
     boundaryLoadMethod,
     orgUnitColumn,
     metric,
@@ -525,8 +535,9 @@ function DHIS2Map({
   const [error, setError] = useState<string | null>(null);
   const [drillState, setDrillState] = useState<DrillState>({
     currentLevel:
-      Array.isArray(boundaryLevels) && boundaryLevels.length > 0
-        ? Math.min(...boundaryLevels)
+      Array.isArray(effectiveBoundaryLevels) &&
+      effectiveBoundaryLevels.length > 0
+        ? Math.min(...effectiveBoundaryLevels)
         : 1,
     parentId: null,
     parentName: null,
@@ -1188,19 +1199,22 @@ function DHIS2Map({
     // eslint-disable-next-line no-console
     console.log('[DHIS2Map] fetchBoundaries called with:', {
       databaseId,
-      boundaryLevels,
-      type: typeof boundaryLevels,
-      isArray: Array.isArray(boundaryLevels),
-      length: boundaryLevels?.length,
+      boundaryLevels: effectiveBoundaryLevels,
+      type: typeof effectiveBoundaryLevels,
+      isArray: Array.isArray(effectiveBoundaryLevels),
+      length: effectiveBoundaryLevels?.length,
     });
 
     if (!databaseId) {
       setError(t('No database selected'));
       return;
     }
-    if (!boundaryLevels || boundaryLevels.length === 0) {
+    if (!effectiveBoundaryLevels || effectiveBoundaryLevels.length === 0) {
       // eslint-disable-next-line no-console
-      console.warn('[DHIS2Map] No boundary levels provided:', boundaryLevels);
+      console.warn(
+        '[DHIS2Map] No boundary levels provided:',
+        effectiveBoundaryLevels,
+      );
       setError(
         t(
           'Please select at least one boundary level in the chart configuration',
@@ -1220,7 +1234,7 @@ function DHIS2Map({
 
     // eslint-disable-next-line no-console
     console.log(
-      `[DHIS2Map] Fetching ALL boundaries for levels: ${boundaryLevels.join(', ')} (no parent filter - matching standalone behavior)`,
+      `[DHIS2Map] Fetching ALL boundaries for levels: ${effectiveBoundaryLevels.join(', ')} (no parent filter - matching standalone behavior)`,
     );
 
     try {
@@ -1240,15 +1254,33 @@ function DHIS2Map({
       //   we can benefit from valid cached geometry.
       const endpointToUse = boundaryLoadMethod || 'geoJSON';
 
-      const result = await loadDHIS2GeoFeatures({
-        databaseId,
-        levels: boundaryLevels,
-        endpoint: endpointToUse,
-        cacheKeyPrefix: 'dhis2map_boundaries',
-        cacheDuration: 24 * 60 * 60 * 1000, // 24 hours persistent cache
-        enableBackgroundRefresh: true,
-        forceRefresh: false,
-      });
+      const loadWithEndpoint = async (
+        endpoint: 'geoJSON' | 'geoFeatures',
+      ) =>
+        loadDHIS2GeoFeatures({
+          databaseId,
+          levels: effectiveBoundaryLevels,
+          endpoint,
+          cacheKeyPrefix: 'dhis2map_boundaries',
+          cacheDuration: 24 * 60 * 60 * 1000, // 24 hours persistent cache
+          enableBackgroundRefresh: true,
+          forceRefresh: false,
+        });
+
+      let result = await loadWithEndpoint(endpointToUse);
+
+      // Fallback: if the chosen endpoint returns no features, try the other one.
+      // This protects against DHIS2 instances that lack organisationUnits.geojson
+      // or have geoFeatures disabled.
+      if (result.totalCount === 0) {
+        const fallbackEndpoint =
+          endpointToUse === 'geoJSON' ? 'geoFeatures' : 'geoJSON';
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[DHIS2Map] No boundaries returned from ${endpointToUse}. Falling back to ${fallbackEndpoint}`,
+        );
+        result = await loadWithEndpoint(fallbackEndpoint);
+      }
 
       // eslint-disable-next-line no-console
       console.log('[DHIS2Map] loadDHIS2GeoFeatures result:', {
@@ -1388,12 +1420,12 @@ function DHIS2Map({
     } finally {
       setLoading(false);
     }
-  }, [databaseId, boundaryLevels, boundaryLoadMethod]);
+  }, [databaseId, effectiveBoundaryLevels, boundaryLoadMethod]);
 
   // Create a stable string representation of boundary levels for change detection
   const boundaryLevelsKey = useMemo(
-    () => (boundaryLevels || []).sort((a, b) => a - b).join(','),
-    [boundaryLevels],
+    () => (effectiveBoundaryLevels || []).sort((a, b) => a - b).join(','),
+    [effectiveBoundaryLevels],
   );
 
   // Fetch boundaries when levels change
@@ -1402,13 +1434,17 @@ function DHIS2Map({
     console.log(
       `[DHIS2Map] Boundary config changed - levels: ${boundaryLevelsKey}`,
       {
-        levels: boundaryLevels,
+        levels: effectiveBoundaryLevels,
         databaseId,
         hasFetchBoundaries: !!fetchBoundaries,
       },
     );
     // Only call fetchBoundaries if we have valid level and database info
-    if (databaseId && boundaryLevels && boundaryLevels.length > 0) {
+    if (
+      databaseId &&
+      effectiveBoundaryLevels &&
+      effectiveBoundaryLevels.length > 0
+    ) {
       // Reset loading state and fetch new boundaries
       setLoading(true);
       fetchBoundaries();
@@ -1418,11 +1454,11 @@ function DHIS2Map({
       console.warn('[DHIS2Map] Skipping boundary fetch:', {
         reason: !databaseId
           ? 'No database ID'
-          : !boundaryLevels?.length
+          : !effectiveBoundaryLevels?.length
             ? 'No boundary levels'
             : 'Unknown',
         databaseId,
-        boundaryLevels,
+        boundaryLevels: effectiveBoundaryLevels,
       });
       if (!databaseId) {
         setError(
@@ -1571,8 +1607,8 @@ function DHIS2Map({
       let newParentName: string | null;
 
       const defaultLevel =
-        boundaryLevels && boundaryLevels.length > 0
-          ? Math.min(...boundaryLevels)
+        effectiveBoundaryLevels && effectiveBoundaryLevels.length > 0
+          ? Math.min(...effectiveBoundaryLevels)
           : 1;
 
       if (toIndex !== undefined && toIndex >= 0) {
@@ -1603,7 +1639,7 @@ function DHIS2Map({
         });
       }
     },
-    [drillState, boundaryLevels, setDataMask],
+    [drillState, effectiveBoundaryLevels, setDataMask],
   );
 
   // Helper function to get value for a feature - tries ID first, then name

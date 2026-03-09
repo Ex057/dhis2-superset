@@ -80,13 +80,13 @@ const DASHBOARD_ALERT = t(
 );
 
 const DASHBOARD_CONTEXT_ALERT = t(
-  `You are viewing this chart in a dashboard context with labels shared across multiple charts.
-        The color scheme selection is disabled.`,
+  `This chart shares labels with other charts on the dashboard.
+        Changing the color scheme will preserve shared label colors but may reset other labels.`,
 );
 
 const DASHBOARD_CONTEXT_TOOLTIP = t(
-  `You are viewing this chart in the context of a dashboard that is directly affecting its colors.
-        To edit the color scheme, open this chart outside of the dashboard.`,
+  `This chart shares labels with other charts on the dashboard.
+        Changing the color scheme will keep shared label colors intact.`,
 );
 
 const Label = ({
@@ -157,8 +157,8 @@ const ColorSchemeControl = ({
     countSharedLabelsColor > 0 &&
     chartLabels.some(label => sharedLabelsColors.includes(label))
   );
-  const hasDashboardScheme = dashboardId && hasDashboardColorScheme;
-  const showDashboardLockedOption = hasDashboardScheme || hasSharedLabelsColor;
+  const hasDashboardScheme = Boolean(dashboardId && hasDashboardColorScheme);
+  const showDashboardLockedOption = hasDashboardScheme;
   const theme = useTheme();
   const currentScheme = useMemo(() => {
     if (showDashboardLockedOption) {
@@ -317,7 +317,7 @@ const ColorSchemeControl = ({
         `}
         aria-label={t('Select color scheme')}
         allowClear={clearable}
-        disabled={hasDashboardScheme || hasSharedLabelsColor}
+        disabled={hasDashboardScheme}
         onChange={handleOnChange}
         placeholder={t('Select scheme')}
         value={currentScheme}

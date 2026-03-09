@@ -38,8 +38,10 @@ def fix_dhis2_datasets():
         for dataset in all_datasets:
             # Check if dataset has a period column
             period_columns = [
-                col for col in dataset.columns
+                col
+                for col in dataset.columns
                 if 'period' in col.column_name.lower()
+                and 'period_start' not in col.column_name.lower()
             ]
 
             if not period_columns:
@@ -53,7 +55,7 @@ def fix_dhis2_datasets():
                 print(f"   Current main datetime: {dataset.main_dttm_col}")
 
                 # If Period is the main datetime column, remove it
-                if 'period' in dataset.main_dttm_col.lower():
+                if 'period' in dataset.main_dttm_col.lower() and 'period_start' not in dataset.main_dttm_col.lower():
                     print(f"   ⚠️  Removing Period as main datetime column")
                     dataset.main_dttm_col = None
                     fixed_count += 1
@@ -125,4 +127,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-

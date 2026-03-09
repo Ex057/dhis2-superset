@@ -99,6 +99,17 @@ const storeSidebarLayoutPreference = (layout: PublicPageSidebarLayout) => {
   }
 };
 
+const hexToRgba = (hex: string, alpha: number): string => {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) {
+    return `rgba(0,0,0,${alpha})`;
+  }
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
 // Dynamic styled components that accept configuration
 const PageWrapper = styled.div<{ $customCss?: string }>`
   position: fixed;
@@ -308,6 +319,7 @@ export default function PublicLandingPage({
 }: PublicLandingPageProps = {}) {
   const { config: baseConfig, loading: configLoading } = usePublicPageConfig();
   const theme = useTheme();
+  const [config, setConfig] = useState<PublicPageLayoutConfig>(baseConfig);
   const [selectedDashboard, setSelectedDashboard] = useState<
     Dashboard | undefined
   >(undefined);
@@ -317,9 +329,13 @@ export default function PublicLandingPage({
   );
 
   // Merge override config if provided
-  const config = overrideConfig
-    ? { ...baseConfig, ...overrideConfig }
-    : baseConfig;
+  useEffect(() => {
+    const nextConfig = overrideConfig
+      ? { ...baseConfig, ...overrideConfig }
+      : baseConfig;
+    setConfig(nextConfig);
+  }, [baseConfig, overrideConfig]);
+
 
   const handleLogin = () => {
     window.location.href = config.navbar.loginButton.url;
@@ -331,6 +347,8 @@ export default function PublicLandingPage({
 
   const { navbar, sidebar, content, footer } = config;
   const isDarkMode = themeMode === 'dark';
+  const accentColor = sidebar.accentColor || theme.colorPrimary;
+  const accentBg = hexToRgba(accentColor, 0.16);
 
   useEffect(() => {
     storeThemePreference(themeMode);
@@ -370,15 +388,13 @@ export default function PublicLandingPage({
         '--public-page-text-secondary-color': isDarkMode
           ? '#9fb3c8'
           : theme.colorTextSecondary,
-        '--public-page-primary-color': isDarkMode
-          ? '#74b3ff'
-          : theme.colorPrimary,
+        '--public-page-primary-color': isDarkMode ? '#74b3ff' : accentColor,
         '--public-page-primary-bg': isDarkMode
           ? 'rgba(116, 179, 255, 0.2)'
-          : theme.colorPrimaryBg,
+          : accentBg,
         '--public-page-link-hover-color': isDarkMode
           ? '#74b3ff'
-          : theme.colorPrimary,
+          : accentColor,
         '--public-page-hover-bg': isDarkMode ? '#1b3553' : theme.colorBgLayout,
         '--public-page-toggle-bg': isDarkMode
           ? '#15324f'
@@ -389,6 +405,8 @@ export default function PublicLandingPage({
         '--public-page-toggle-color': isDarkMode ? '#e6edf3' : theme.colorText,
       }) as CSSProperties,
     [
+      accentBg,
+      accentColor,
       content.backgroundColor,
       footer.backgroundColor,
       footer.textColor,
@@ -400,8 +418,6 @@ export default function PublicLandingPage({
       theme.colorBgContainer,
       theme.colorBgLayout,
       theme.colorBorder,
-      theme.colorPrimary,
-      theme.colorPrimaryBg,
       theme.colorText,
       theme.colorTextSecondary,
     ],
@@ -574,6 +590,7 @@ export default function PublicLandingPage({
           ))}
         </Footer>
       )}
+
     </PageWrapper>
   );
 }
