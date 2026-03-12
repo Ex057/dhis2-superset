@@ -166,3 +166,6 @@ superset_home/dhis2_cache/*.meta
 
 # Log files
 logs/*.log
+
+# Local Superset override config
+superset_config2.py
