@@ -169,3 +169,9 @@ logs/*.log
 
 # Local Superset override config
 superset_config2.py
+
+# Local logs
+logs/*.log
+
+# Claude
+.claude/
