@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { type CSSProperties, useEffect, useMemo, useState } from 'react';
-import { styled, t, useTheme } from '@superset-ui/core';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { styled, t, useTheme, SupersetClient } from '@superset-ui/core';
 import { Button, Loading } from '@superset-ui/core/components';
 import { Icons } from '@superset-ui/core/components/Icons';
 import logoImage from 'src/assets/images/loog.jpg';
@@ -26,6 +26,8 @@ import DashboardContentArea from 'src/features/home/DashboardContentArea';
 import ConfigurableSidebar, { type Dashboard } from './ConfigurableSidebar';
 import { usePublicPageConfig } from './usePublicPageConfig';
 import { PublicPageLayoutConfig } from './config';
+
+const NAV_MENU_HEIGHT = 44;
 
 type PublicPageTheme = 'light' | 'dark';
 type PublicPageSidebarLayout = 'side' | 'top';
@@ -172,16 +174,6 @@ const NavLinks = styled.div`
   gap: 16px;
 `;
 
-const NavLink = styled.a`
-  color: var(--public-page-navbar-link-color, #374151);
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 500;
-  transition: color 0.15s ease;
-  &:hover {
-    color: var(--public-page-primary-color, #2b6a6a);
-  }
-`;
 
 const ContentWrapper = styled.div<{
   $navbarHeight: number;
@@ -628,6 +620,180 @@ const ThemeToggleButton = styled(Button)`
   `}
 `;
 
+/* ── Navigation Menu Bar ── */
+const NavMenuBar = styled.div<{ $top: number }>`
+  position: fixed;
+  top: ${({ $top }) => $top}px;
+  left: 0;
+  right: 0;
+  height: ${NAV_MENU_HEIGHT}px;
+  background: var(--public-page-navmenu-bg, #f8fafc);
+  border-bottom: 1px solid var(--public-page-welcome-border, #e5e7eb);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 4px;
+`;
+
+const NavMenuItemBase = styled.button<{ $active?: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: ${NAV_MENU_HEIGHT}px;
+  padding: 0 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid ${({ $active }) => ($active ? '#2b6a6a' : 'transparent')};
+  color: ${({ $active }) =>
+    $active ? '#2b6a6a' : 'var(--public-page-navbar-link-color, #374151)'};
+  font-size: 14px;
+  font-weight: ${({ $active }) => ($active ? '600' : '500')};
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease;
+  &:hover {
+    color: #2b6a6a;
+    border-bottom-color: rgba(43, 106, 106, 0.4);
+  }
+`;
+
+const NavMenuLink = styled.a<{ $active?: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: ${NAV_MENU_HEIGHT}px;
+  padding: 0 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid ${({ $active }) => ($active ? '#2b6a6a' : 'transparent')};
+  color: ${({ $active }) =>
+    $active ? '#2b6a6a' : 'var(--public-page-navbar-link-color, #374151)'};
+  font-size: 14px;
+  font-weight: ${({ $active }) => ($active ? '600' : '500')};
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease;
+  &:hover {
+    color: #2b6a6a;
+    border-bottom-color: rgba(43, 106, 106, 0.4);
+    text-decoration: none;
+  }
+`;
+
+const NavMenuCaret = styled.span<{ $open: boolean }>`
+  display: inline-block;
+  font-size: 10px;
+  transform: ${({ $open }) => ($open ? 'rotate(180deg)' : 'rotate(0deg)')};
+  transition: transform 0.15s ease;
+  opacity: 0.6;
+`;
+
+/* ── Mega Menu Dropdown ── */
+const MegaMenuBackdrop = styled.div`
+  position: fixed;
+  inset: 0;
+  z-index: 98;
+`;
+
+const MegaMenuPanel = styled.div<{ $top: number }>`
+  position: fixed;
+  top: ${({ $top }) => $top}px;
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  z-index: 99;
+  padding: 24px 32px 28px;
+  max-height: calc(100vh - ${({ $top }) => $top}px - 48px);
+  overflow-y: auto;
+`;
+
+const MegaMenuHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+`;
+
+const MegaMenuTitle = styled.div`
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #9ca3af;
+`;
+
+const MegaMenuGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+`;
+
+const MegaMenuTile = styled.button`
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  font-family: inherit;
+  &:hover {
+    border-color: #2b6a6a;
+    background: #f0f9f8;
+  }
+`;
+
+const MegaMenuTileIcon = styled.div`
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  background: rgba(43, 106, 106, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+`;
+
+const MegaMenuTileLabel = styled.div`
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e2d45;
+  line-height: 1.3;
+`;
+
+const MegaMenuEmpty = styled.div`
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 16px 0;
+`;
+
+const MegaMenuClose = styled.button`
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid #e5e7eb;
+  background: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: #6b7280;
+  line-height: 1;
+  &:hover {
+    background: #f3f4f6;
+    color: #374151;
+  }
+`;
+
 interface PublicLandingPageProps {
   /** Optional override configuration */
   overrideConfig?: Partial<PublicPageLayoutConfig>;
@@ -646,6 +812,9 @@ export default function PublicLandingPage({
   const [sidebarLayout, setSidebarLayout] = useState<PublicPageSidebarLayout>(
     getStoredSidebarLayout() || 'top',
   );
+  const [navDashboards, setNavDashboards] = useState<Dashboard[]>([]);
+  const [megaMenuOpen, setMegaMenuOpen] = useState(false);
+  const megaMenuRef = useRef<HTMLDivElement>(null);
 
   // Merge override config if provided
   useEffect(() => {
@@ -655,6 +824,12 @@ export default function PublicLandingPage({
     setConfig(nextConfig);
   }, [baseConfig, overrideConfig]);
 
+  // Fetch public dashboards for the mega menu
+  useEffect(() => {
+    SupersetClient.get({ endpoint: '/api/v1/dashboard/public/' })
+      .then(({ json }) => setNavDashboards(json.result || []))
+      .catch(() => {});
+  }, []);
 
   const handleLogin = () => {
     window.location.href = config.navbar.loginButton.url;
@@ -662,6 +837,12 @@ export default function PublicLandingPage({
 
   const handleDashboardSelect = (dashboard: Dashboard) => {
     setSelectedDashboard(dashboard);
+    setMegaMenuOpen(false);
+  };
+
+  const handleWelcomeClick = () => {
+    setSelectedDashboard(undefined);
+    setMegaMenuOpen(false);
   };
 
   const { navbar, sidebar, content, footer } = config;
@@ -735,6 +916,7 @@ export default function PublicLandingPage({
           ? 'linear-gradient(160deg, #0d1f1a 0%, #0a1826 100%)'
           : 'linear-gradient(160deg, #f0f7f4 0%, #eaf4f8 100%)',
         '--public-page-kpi-bg': isDarkMode ? '#131b2e' : '#ffffff',
+        '--public-page-navmenu-bg': isDarkMode ? '#131b2e' : '#f8fafc',
       }) as CSSProperties,
     [
       accentBg,
@@ -807,16 +989,6 @@ export default function PublicLandingPage({
           </LogoSection>
 
           <NavLinks>
-            {navbar.customLinks.map((link, index) => (
-              <NavLink
-                key={index}
-                href={link.url}
-                target={link.external ? '_blank' : undefined}
-                rel={link.external ? 'noopener noreferrer' : undefined}
-              >
-                {link.text}
-              </NavLink>
-            ))}
             <ThemeToggleButton
               type="default"
               aria-label={
@@ -832,29 +1004,6 @@ export default function PublicLandingPage({
               icon={isDarkMode ? <Icons.SunOutlined /> : <Icons.MoonOutlined />}
               onClick={handleThemeToggle}
             />
-            {sidebar.enabled && (
-              <ThemeToggleButton
-                type="default"
-                aria-label={
-                  sidebarLayout === 'side'
-                    ? t('Move dashboard list to top')
-                    : t('Move dashboard list to side')
-                }
-                title={
-                  sidebarLayout === 'side'
-                    ? t('Move dashboard list to top')
-                    : t('Move dashboard list to side')
-                }
-                icon={
-                  sidebarLayout === 'side' ? (
-                    <Icons.VerticalAlignTopOutlined />
-                  ) : (
-                    <Icons.VerticalLeftOutlined />
-                  )
-                }
-                onClick={handleSidebarLayoutToggle}
-              />
-            )}
             {navbar.loginButton.enabled && (
               <Button type={navbar.loginButton.type} onClick={handleLogin}>
                 {t(navbar.loginButton.text)}
@@ -864,8 +1013,73 @@ export default function PublicLandingPage({
         </PublicNavbar>
       )}
 
+      {/* Navigation Menu Bar */}
+      {navbar.enabled && (() => {
+        const totalTop = navbar.height;
+        return (
+          <NavMenuBar $top={totalTop}>
+            <NavMenuItemBase
+              $active={!selectedDashboard && !megaMenuOpen}
+              onClick={handleWelcomeClick}
+            >
+              Welcome
+            </NavMenuItemBase>
+
+            <NavMenuItemBase
+              $active={!!selectedDashboard || megaMenuOpen}
+              onClick={() => setMegaMenuOpen(prev => !prev)}
+            >
+              Dashboards
+              <NavMenuCaret $open={megaMenuOpen}>▾</NavMenuCaret>
+            </NavMenuItemBase>
+
+            {navbar.customLinks.map((link, i) => (
+              <NavMenuLink
+                key={i}
+                href={link.url}
+                target={link.external ? '_blank' : undefined}
+                rel={link.external ? 'noopener noreferrer' : undefined}
+              >
+                {link.text}
+              </NavMenuLink>
+            ))}
+          </NavMenuBar>
+        );
+      })()}
+
+      {/* Mega menu dropdown */}
+      {megaMenuOpen && (
+        <>
+          <MegaMenuBackdrop onClick={() => setMegaMenuOpen(false)} />
+          <MegaMenuPanel
+            $top={navbar.height + NAV_MENU_HEIGHT}
+            ref={megaMenuRef}
+          >
+            <MegaMenuHeader>
+              <MegaMenuTitle>Public Dashboards</MegaMenuTitle>
+              <MegaMenuClose onClick={() => setMegaMenuOpen(false)}>×</MegaMenuClose>
+            </MegaMenuHeader>
+            {navDashboards.length === 0 ? (
+              <MegaMenuEmpty>No public dashboards available.</MegaMenuEmpty>
+            ) : (
+              <MegaMenuGrid>
+                {navDashboards.map(db => (
+                  <MegaMenuTile
+                    key={db.id}
+                    onClick={() => handleDashboardSelect(db)}
+                  >
+                    <MegaMenuTileIcon>📊</MegaMenuTileIcon>
+                    <MegaMenuTileLabel>{db.dashboard_title}</MegaMenuTileLabel>
+                  </MegaMenuTile>
+                ))}
+              </MegaMenuGrid>
+            )}
+          </MegaMenuPanel>
+        </>
+      )}
+
       <ContentWrapper
-        $navbarHeight={navbar.enabled ? navbar.height : 0}
+        $navbarHeight={navbar.enabled ? navbar.height + NAV_MENU_HEIGHT : 0}
         $sidebarWidth={sidebar.width}
         $sidebarPosition={sidebar.position}
         $sidebarEnabled={sidebar.enabled && !!selectedDashboard}
@@ -878,7 +1092,7 @@ export default function PublicLandingPage({
           <>
             <ConfigurableSidebar
               config={sidebar}
-              navbarHeight={navbar.enabled ? navbar.height : 0}
+              navbarHeight={navbar.enabled ? navbar.height + NAV_MENU_HEIGHT : 0}
               selectedKey={selectedDashboard.id.toString()}
               onSelect={handleDashboardSelect}
               layoutMode="top"
