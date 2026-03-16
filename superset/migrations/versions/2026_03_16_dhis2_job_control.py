@@ -64,7 +64,7 @@ def upgrade() -> None:
                 "cancel_requested",
                 sa.Boolean(),
                 nullable=False,
-                server_default=sa.text("0"),
+                server_default=sa.false(),
             ),
         )
 
@@ -129,7 +129,7 @@ def upgrade() -> None:
                 "cancel_requested",
                 sa.Boolean(),
                 nullable=False,
-                server_default=sa.text("0"),
+                server_default=sa.false(),
             ),
             sa.Column("started_at", sa.DateTime(), nullable=True),
             sa.Column("completed_at", sa.DateTime(), nullable=True),
