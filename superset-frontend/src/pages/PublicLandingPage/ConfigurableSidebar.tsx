@@ -142,7 +142,7 @@ const StyledMenu = styled(Menu)<{ $layoutMode: 'side' | 'top' }>`
         ${$layoutMode === 'top'
           ? `
           border-bottom: 2px solid var(--public-page-primary-color, ${theme.colorPrimary});
-          background: var(--public-page-primary-bg, rgba(43,106,106,0.06));
+          background: var(--public-page-primary-bg, rgba(0,120,212,0.06));
         `
           : `
           background: var(--public-page-primary-bg, ${theme.colorPrimaryBg});

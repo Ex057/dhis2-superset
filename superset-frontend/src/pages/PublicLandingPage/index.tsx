@@ -219,7 +219,7 @@ const ContentWrapper = styled.div<{
 
 /* ── Hero Section ── */
 const HeroSection = styled.section`
-  background: var(--public-page-hero-bg, linear-gradient(160deg, #f0f7f4 0%, #eaf4f8 100%));
+  background: var(--public-page-hero-bg, linear-gradient(160deg, #EFF6FC 0%, #F3F2F1 100%));
   padding: 64px 48px 56px;
   display: flex;
   align-items: center;
@@ -240,9 +240,9 @@ const HeroBadge = styled.div`
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(43, 106, 106, 0.08);
-  border: 1px solid rgba(43, 106, 106, 0.2);
-  color: #2b6a6a;
+  background: rgba(0, 120, 212, 0.07);
+  border: 1px solid rgba(0, 120, 212, 0.2);
+  color: #0078D4;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -257,7 +257,7 @@ const HeroTitle = styled.h1`
   font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.8px;
-  color: var(--public-page-heading-color, #1e2d45);
+  color: var(--public-page-heading-color, #201F1E);
   margin: 0 0 16px;
   @media (max-width: 768px) {
     font-size: 28px;
@@ -267,7 +267,7 @@ const HeroTitle = styled.h1`
 const HeroSubtitle = styled.p`
   font-size: 16px;
   line-height: 1.65;
-  color: var(--public-page-text-secondary-color, #4b5563);
+  color: var(--public-page-text-secondary-color, #605E5C);
   margin: 0 0 32px;
   max-width: 500px;
 `;
@@ -285,7 +285,7 @@ const HeroCtaPrimary = styled.a`
   gap: 8px;
   height: 42px;
   padding: 0 24px;
-  background: #2b6a6a;
+  background: #0078D4;
   color: #ffffff;
   font-size: 14px;
   font-weight: 600;
@@ -293,7 +293,7 @@ const HeroCtaPrimary = styled.a`
   text-decoration: none;
   transition: background 0.15s ease;
   &:hover {
-    background: #245858;
+    background: #106EBE;
     color: #ffffff;
     text-decoration: none;
   }
@@ -306,17 +306,17 @@ const HeroCtaSecondary = styled.a`
   height: 42px;
   padding: 0 20px;
   background: #ffffff;
-  color: #374151;
+  color: #252423;
   font-size: 14px;
   font-weight: 500;
   border-radius: 6px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #EDEBE9;
   text-decoration: none;
   transition: border-color 0.15s ease, background 0.15s ease;
   &:hover {
-    border-color: #9ca3af;
-    background: #f9fafb;
-    color: #374151;
+    border-color: #A19F9D;
+    background: #FAF9F8;
+    color: #252423;
     text-decoration: none;
   }
 `;
@@ -328,9 +328,9 @@ const HeroVisual = styled.div`
   justify-content: center;
   width: 280px;
   height: 200px;
-  background: rgba(43, 106, 106, 0.06);
+  background: rgba(0, 120, 212, 0.05);
   border-radius: 12px;
-  border: 1px solid rgba(43, 106, 106, 0.12);
+  border: 1px solid rgba(0, 120, 212, 0.12);
   @media (max-width: 768px) {
     display: none;
   }
@@ -338,7 +338,7 @@ const HeroVisual = styled.div`
 
 const HeroVisualInner = styled.div`
   text-align: center;
-  color: #2b6a6a;
+  color: #0078D4;
 `;
 
 const HeroVisualIcon = styled.div`
@@ -352,15 +352,15 @@ const HeroVisualLabel = styled.div`
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
-  color: #2b6a6a;
+  color: #0078D4;
   opacity: 0.8;
 `;
 
 /* ── KPI Band ── */
 const KPIBand = styled.div`
   background: var(--public-page-kpi-bg, #ffffff);
-  border-top: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
+  border-top: 1px solid #EDEBE9;
+  border-bottom: 1px solid #EDEBE9;
   padding: 0 48px;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -376,13 +376,13 @@ const KPIBand = styled.div`
 
 const KPICard = styled.div<{ $color: string }>`
   padding: 24px 20px;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid #EDEBE9;
   &:last-child {
     border-right: none;
   }
   @media (max-width: 900px) {
     border-right: none;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid #EDEBE9;
   }
 `;
 
@@ -398,7 +398,7 @@ const KPILabel = styled.div`
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
-  color: #6b7280;
+  color: #605E5C;
 `;
 
 const KPIBadge = styled.div<{ $color: string }>`
@@ -415,14 +415,14 @@ const KPIValue = styled.div`
   font-size: 30px;
   font-weight: 800;
   letter-spacing: -0.5px;
-  color: #1e2d45;
+  color: #201F1E;
   line-height: 1;
   margin-bottom: 6px;
 `;
 
 const KPISubtext = styled.div`
   font-size: 12px;
-  color: #9ca3af;
+  color: #A19F9D;
 `;
 
 /* ── Program content sections ── */
@@ -446,7 +446,7 @@ const SectionLabel = styled.div`
   font-weight: 700;
   letter-spacing: 0.7px;
   text-transform: uppercase;
-  color: #2b6a6a;
+  color: #0078D4;
   margin-bottom: 10px;
 `;
 
@@ -455,14 +455,14 @@ const SectionHeading = styled.h2`
   font-weight: 800;
   letter-spacing: -0.4px;
   line-height: 1.25;
-  color: #1e2d45;
+  color: #201F1E;
   margin: 0 0 12px;
 `;
 
 const SectionBody = styled.p`
   font-size: 15px;
   line-height: 1.7;
-  color: #4b5563;
+  color: #605E5C;
   max-width: 680px;
   margin: 0;
 `;
@@ -483,7 +483,7 @@ const PillarsGrid = styled.div`
 
 const PillarCard = styled.div<{ $accent: string }>`
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #EDEBE9;
   border-top: 3px solid ${({ $accent }) => $accent};
   border-radius: 6px;
   padding: 20px 20px 22px;
@@ -507,14 +507,14 @@ const PillarIconWrap = styled.div<{ $accent: string }>`
 const PillarTitle = styled.div`
   font-size: 14px;
   font-weight: 700;
-  color: #1e2d45;
+  color: #201F1E;
   line-height: 1.3;
 `;
 
 const PillarDesc = styled.div`
   font-size: 13px;
   line-height: 1.55;
-  color: #6b7280;
+  color: #605E5C;
 `;
 
 /* Strategic targets */
@@ -522,7 +522,7 @@ const TargetsRow = styled.div`
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 0;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #EDEBE9;
   border-radius: 8px;
   overflow: hidden;
   margin-top: 36px;
@@ -533,13 +533,13 @@ const TargetsRow = styled.div`
 
 const TargetItem = styled.div`
   padding: 28px 24px;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid #EDEBE9;
   text-align: center;
   background: #ffffff;
   &:last-child { border-right: none; }
   @media (max-width: 600px) {
     border-right: none;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid #EDEBE9;
     &:last-child { border-bottom: none; }
   }
 `;
@@ -548,7 +548,7 @@ const TargetValue = styled.div`
   font-size: 32px;
   font-weight: 800;
   letter-spacing: -0.5px;
-  color: #2b6a6a;
+  color: #0078D4;
   line-height: 1;
   margin-bottom: 8px;
 `;
@@ -556,13 +556,13 @@ const TargetValue = styled.div`
 const TargetLabel = styled.div`
   font-size: 13px;
   font-weight: 600;
-  color: #1e2d45;
+  color: #201F1E;
   margin-bottom: 4px;
 `;
 
 const TargetSubtext = styled.div`
   font-size: 12px;
-  color: #9ca3af;
+  color: #A19F9D;
   line-height: 1.4;
 `;
 
@@ -580,19 +580,19 @@ const PartnerChip = styled.div`
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  background: #F3F2F1;
+  border: 1px solid #EDEBE9;
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
-  color: #475569;
+  color: #605E5C;
   white-space: nowrap;
 `;
 
 /* ── Data sources strip ── */
 const DataSourcesStrip = styled.div`
-  background: #f8fafc;
-  border-top: 1px solid #e5e7eb;
+  background: #FAF9F8;
+  border-top: 1px solid #EDEBE9;
   padding: 20px 48px;
   display: flex;
   align-items: center;
@@ -609,7 +609,7 @@ const DataSourcesLabel = styled.div`
   font-weight: 600;
   letter-spacing: 0.5px;
   text-transform: uppercase;
-  color: #9ca3af;
+  color: #A19F9D;
   white-space: nowrap;
 `;
 
@@ -618,7 +618,7 @@ const DataSourceItem = styled.div`
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #4b5563;
+  color: #605E5C;
   font-weight: 500;
 `;
 
@@ -626,20 +626,20 @@ const DataSourceDot = styled.div`
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #2b6a6a;
+  background: #0078D4;
   flex-shrink: 0;
 `;
 
 /* ── Freshness indicator ── */
 const FreshnessBar = styled.div`
-  background: rgba(43, 106, 106, 0.06);
-  border-bottom: 1px solid rgba(43, 106, 106, 0.12);
+  background: rgba(0, 120, 212, 0.05);
+  border-bottom: 1px solid rgba(0, 120, 212, 0.12);
   padding: 6px 48px;
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #2b6a6a;
+  color: #0078D4;
   font-weight: 500;
   @media (max-width: 768px) {
     padding: 6px 24px;
@@ -650,9 +650,9 @@ const FreshnessDot = styled.div`
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #22c55e;
+  background: #107C10;
   flex-shrink: 0;
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+  box-shadow: 0 0 0 2px rgba(16, 124, 16, 0.25);
 `;
 
 
@@ -697,16 +697,16 @@ const ThemeToggleButton = styled(Button)`
   ${({ theme }) => `
     padding: ${theme.sizeUnit}px ${theme.sizeUnit * 2}px;
     border-radius: ${theme.borderRadius}px;
-    border-color: var(--public-page-toggle-border, #d1d5db);
+    border-color: var(--public-page-toggle-border, #EDEBE9);
     background: var(--public-page-toggle-bg, #ffffff);
-    color: var(--public-page-toggle-color, #374151);
+    color: var(--public-page-toggle-color, #252423);
     font-size: 13px;
 
     &:hover,
     &:focus {
-      border-color: var(--public-page-primary-color, #2b6a6a) !important;
-      background: var(--public-page-hover-bg, #f0f9f8) !important;
-      color: var(--public-page-primary-color, #2b6a6a) !important;
+      border-color: var(--public-page-primary-color, #0078D4) !important;
+      background: var(--public-page-hover-bg, #EFF6FC) !important;
+      color: var(--public-page-primary-color, #0078D4) !important;
     }
   `}
 `;
@@ -718,8 +718,8 @@ const NavMenuBar = styled.div<{ $top: number }>`
   left: 0;
   right: 0;
   height: ${NAV_MENU_HEIGHT}px;
-  background: var(--public-page-navmenu-bg, #f8fafc);
-  border-bottom: 1px solid var(--public-page-welcome-border, #e5e7eb);
+  background: var(--public-page-navmenu-bg, #FAF9F8);
+  border-bottom: 1px solid var(--public-page-welcome-border, #EDEBE9);
   z-index: 100;
   display: flex;
   align-items: center;
@@ -735,9 +735,9 @@ const NavMenuItemBase = styled.button<{ $active?: boolean }>`
   padding: 0 14px;
   background: none;
   border: none;
-  border-bottom: 2px solid ${({ $active }) => ($active ? '#2b6a6a' : 'transparent')};
+  border-bottom: 2px solid ${({ $active }) => ($active ? '#0078D4' : 'transparent')};
   color: ${({ $active }) =>
-    $active ? '#2b6a6a' : 'var(--public-page-navbar-link-color, #374151)'};
+    $active ? '#0078D4' : 'var(--public-page-navbar-link-color, #252423)'};
   font-size: 14px;
   font-weight: ${({ $active }) => ($active ? '600' : '500')};
   font-family: inherit;
@@ -745,8 +745,8 @@ const NavMenuItemBase = styled.button<{ $active?: boolean }>`
   white-space: nowrap;
   transition: color 0.15s ease, border-color 0.15s ease;
   &:hover {
-    color: #2b6a6a;
-    border-bottom-color: rgba(43, 106, 106, 0.4);
+    color: #0078D4;
+    border-bottom-color: rgba(0, 120, 212, 0.4);
   }
 `;
 
@@ -758,17 +758,17 @@ const NavMenuLink = styled.a<{ $active?: boolean }>`
   padding: 0 14px;
   background: none;
   border: none;
-  border-bottom: 2px solid ${({ $active }) => ($active ? '#2b6a6a' : 'transparent')};
+  border-bottom: 2px solid ${({ $active }) => ($active ? '#0078D4' : 'transparent')};
   color: ${({ $active }) =>
-    $active ? '#2b6a6a' : 'var(--public-page-navbar-link-color, #374151)'};
+    $active ? '#0078D4' : 'var(--public-page-navbar-link-color, #252423)'};
   font-size: 14px;
   font-weight: ${({ $active }) => ($active ? '600' : '500')};
   text-decoration: none;
   white-space: nowrap;
   transition: color 0.15s ease, border-color 0.15s ease;
   &:hover {
-    color: #2b6a6a;
-    border-bottom-color: rgba(43, 106, 106, 0.4);
+    color: #0078D4;
+    border-bottom-color: rgba(0, 120, 212, 0.4);
     text-decoration: none;
   }
 `;
@@ -794,7 +794,7 @@ const MegaMenuPanel = styled.div<{ $top: number }>`
   left: 0;
   right: 0;
   background: #ffffff;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid #EDEBE9;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
   z-index: 99;
   padding: 24px 32px 28px;
@@ -814,7 +814,7 @@ const MegaMenuTitle = styled.div`
   font-weight: 700;
   letter-spacing: 0.5px;
   text-transform: uppercase;
-  color: #9ca3af;
+  color: #A19F9D;
 `;
 
 const MegaMenuGrid = styled.div`
@@ -828,16 +828,16 @@ const MegaMenuTile = styled.button`
   align-items: flex-start;
   gap: 12px;
   padding: 14px 16px;
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
+  background: #FAF9F8;
+  border: 1px solid #EDEBE9;
   border-radius: 6px;
   cursor: pointer;
   text-align: left;
   transition: border-color 0.15s ease, background 0.15s ease;
   font-family: inherit;
   &:hover {
-    border-color: #2b6a6a;
-    background: #f0f9f8;
+    border-color: #0078D4;
+    background: #EFF6FC;
   }
 `;
 
@@ -856,13 +856,13 @@ const MegaMenuTileIcon = styled.div`
 const MegaMenuTileLabel = styled.div`
   font-size: 13px;
   font-weight: 600;
-  color: #1e2d45;
+  color: #201F1E;
   line-height: 1.3;
 `;
 
 const MegaMenuEmpty = styled.div`
   font-size: 13px;
-  color: #9ca3af;
+  color: #A19F9D;
   padding: 16px 0;
 `;
 
@@ -870,18 +870,18 @@ const MegaMenuClose = styled.button`
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #EDEBE9;
   background: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  color: #6b7280;
+  color: #605E5C;
   line-height: 1;
   &:hover {
     background: #f3f4f6;
-    color: #374151;
+    color: #252423;
   }
 `;
 
@@ -952,62 +952,46 @@ export default function PublicLandingPage({
   const themeVariables = useMemo<CSSProperties>(
     () =>
       ({
-        '--public-page-page-background': isDarkMode ? '#0d111c' : '#ffffff',
-        '--public-page-navbar-background': isDarkMode
-          ? '#161b2d'
-          : navbar.backgroundColor,
+        '--public-page-page-background': isDarkMode ? '#1B1A19' : '#FAF9F8',
+        '--public-page-navbar-background': isDarkMode ? '#252423' : '#ffffff',
         '--public-page-navbar-shadow': isDarkMode
           ? '0 1px 0 rgba(255,255,255,0.06)'
-          : navbar.boxShadow,
-        '--public-page-navbar-link-color': isDarkMode ? '#c9d1d9' : '#374151',
-        '--public-page-content-background': isDarkMode
-          ? '#0b0f1a'
-          : content.backgroundColor,
+          : '0 1px 0 #EDEBE9',
+        '--public-page-navbar-link-color': isDarkMode ? '#C8C6C4' : '#252423',
+        '--public-page-content-background': isDarkMode ? '#1B1A19' : '#FAF9F8',
         '--public-page-sidebar-background': isDarkMode
-          ? '#161b2d'
+          ? '#252423'
           : sidebar.backgroundColor,
         '--public-page-sidebar-text-color': isDarkMode
-          ? '#c9d1d9'
+          ? '#C8C6C4'
           : sidebar.textColor || theme.colorText,
         '--public-page-sidebar-border': isDarkMode
           ? '1px solid rgba(255,255,255,0.08)'
           : sidebar.borderStyle,
         '--public-page-footer-background': isDarkMode
-          ? '#0d111c'
+          ? '#1B1A19'
           : footer.backgroundColor,
-        '--public-page-footer-text': isDarkMode ? '#8b949e' : footer.textColor,
-        '--public-page-text-color': isDarkMode ? '#e6edf3' : '#1e2d45',
-        '--public-page-heading-color': isDarkMode ? '#e6edf3' : '#1e2d45',
-        '--public-page-text-secondary-color': isDarkMode
-          ? '#8b949e'
-          : '#4b5563',
-        '--public-page-primary-color': isDarkMode ? '#4db6ac' : accentColor,
+        '--public-page-footer-text': isDarkMode ? '#A19F9D' : footer.textColor,
+        '--public-page-text-color': isDarkMode ? '#F3F2F1' : '#201F1E',
+        '--public-page-heading-color': isDarkMode ? '#F3F2F1' : '#201F1E',
+        '--public-page-text-secondary-color': isDarkMode ? '#A19F9D' : '#605E5C',
+        '--public-page-primary-color': isDarkMode ? '#479EF5' : accentColor,
         '--public-page-primary-bg': isDarkMode
-          ? 'rgba(77, 182, 172, 0.15)'
+          ? 'rgba(71, 158, 245, 0.12)'
           : accentBg,
-        '--public-page-link-hover-color': isDarkMode ? '#4db6ac' : accentColor,
-        '--public-page-hover-bg': isDarkMode
-          ? 'rgba(255,255,255,0.06)'
-          : '#f0f9f8',
-        '--public-page-toggle-bg': isDarkMode
-          ? 'rgba(255,255,255,0.08)'
-          : '#ffffff',
-        '--public-page-toggle-border': isDarkMode
-          ? 'rgba(255,255,255,0.15)'
-          : '#d1d5db',
-        '--public-page-toggle-color': isDarkMode ? '#c9d1d9' : '#374151',
-        '--public-page-navbar-text-color': isDarkMode ? '#e6edf3' : '#1e2d45',
-        '--public-page-welcome-bg': isDarkMode
-          ? 'rgba(255,255,255,0.03)'
-          : '#ffffff',
-        '--public-page-welcome-border': isDarkMode
-          ? 'rgba(255,255,255,0.08)'
-          : '#e5e7eb',
+        '--public-page-link-hover-color': isDarkMode ? '#479EF5' : accentColor,
+        '--public-page-hover-bg': isDarkMode ? 'rgba(255,255,255,0.06)' : '#EFF6FC',
+        '--public-page-toggle-bg': isDarkMode ? 'rgba(255,255,255,0.08)' : '#ffffff',
+        '--public-page-toggle-border': isDarkMode ? 'rgba(255,255,255,0.15)' : '#EDEBE9',
+        '--public-page-toggle-color': isDarkMode ? '#C8C6C4' : '#252423',
+        '--public-page-navbar-text-color': isDarkMode ? '#F3F2F1' : '#201F1E',
+        '--public-page-welcome-bg': isDarkMode ? 'rgba(255,255,255,0.03)' : '#ffffff',
+        '--public-page-welcome-border': isDarkMode ? 'rgba(255,255,255,0.1)' : '#EDEBE9',
         '--public-page-hero-bg': isDarkMode
-          ? 'linear-gradient(160deg, #0d1f1a 0%, #0a1826 100%)'
-          : 'linear-gradient(160deg, #f0f7f4 0%, #eaf4f8 100%)',
-        '--public-page-kpi-bg': isDarkMode ? '#131b2e' : '#ffffff',
-        '--public-page-navmenu-bg': isDarkMode ? '#131b2e' : '#f8fafc',
+          ? 'linear-gradient(160deg, #1F1E1D 0%, #252423 100%)'
+          : 'linear-gradient(160deg, #EFF6FC 0%, #F3F2F1 100%)',
+        '--public-page-kpi-bg': isDarkMode ? '#252423' : '#ffffff',
+        '--public-page-navmenu-bg': isDarkMode ? '#252423' : '#F3F2F1',
       }) as CSSProperties,
     [
       accentBg,
@@ -1237,34 +1221,34 @@ export default function PublicLandingPage({
 
             {/* KPI Band */}
             <KPIBand>
-              <KPICard $color="#ef4444">
+              <KPICard $color="#FD625E">
                 <KPICardTop>
                   <KPILabel>New Cases</KPILabel>
-                  <KPIBadge $color="#ef4444">↑ Monthly</KPIBadge>
+                  <KPIBadge $color="#FD625E">↑ Monthly</KPIBadge>
                 </KPICardTop>
                 <KPIValue>—</KPIValue>
                 <KPISubtext>Rolling monthly total</KPISubtext>
               </KPICard>
-              <KPICard $color="#f59e0b">
+              <KPICard $color="#E8A114">
                 <KPICardTop>
                   <KPILabel>Malaria Deaths</KPILabel>
-                  <KPIBadge $color="#f59e0b">Monthly</KPIBadge>
+                  <KPIBadge $color="#E8A114">Monthly</KPIBadge>
                 </KPICardTop>
                 <KPIValue>—</KPIValue>
                 <KPISubtext>Reported facility deaths</KPISubtext>
               </KPICard>
-              <KPICard $color="#2b6a6a">
+              <KPICard $color="#01B8AA">
                 <KPICardTop>
                   <KPILabel>Test Positivity</KPILabel>
-                  <KPIBadge $color="#2b6a6a">SPR</KPIBadge>
+                  <KPIBadge $color="#01B8AA">SPR</KPIBadge>
                 </KPICardTop>
                 <KPIValue>—</KPIValue>
                 <KPISubtext>Slide positivity rate</KPISubtext>
               </KPICard>
-              <KPICard $color="#22c55e">
+              <KPICard $color="#107C10">
                 <KPICardTop>
                   <KPILabel>LLIN Coverage</KPILabel>
-                  <KPIBadge $color="#22c55e">Coverage</KPIBadge>
+                  <KPIBadge $color="#107C10">Coverage</KPIBadge>
                 </KPICardTop>
                 <KPIValue>—</KPIValue>
                 <KPISubtext>Households with nets</KPISubtext>
@@ -1286,8 +1270,8 @@ export default function PublicLandingPage({
               </SectionBody>
 
               <PillarsGrid>
-                <PillarCard $accent="#2b6a6a">
-                  <PillarIconWrap $accent="#2b6a6a">🔬</PillarIconWrap>
+                <PillarCard $accent="#01B8AA">
+                  <PillarIconWrap $accent="#01B8AA">🔬</PillarIconWrap>
                   <PillarTitle>Case Management</PillarTitle>
                   <PillarDesc>
                     Prompt diagnosis with RDTs and microscopy, and treatment with
@@ -1296,8 +1280,8 @@ export default function PublicLandingPage({
                   </PillarDesc>
                 </PillarCard>
 
-                <PillarCard $accent="#0284c7">
-                  <PillarIconWrap $accent="#0284c7">🏠</PillarIconWrap>
+                <PillarCard $accent="#0078D4">
+                  <PillarIconWrap $accent="#0078D4">🏠</PillarIconWrap>
                   <PillarTitle>Vector Control</PillarTitle>
                   <PillarDesc>
                     Universal LLIN coverage campaigns and targeted indoor residual
@@ -1306,8 +1290,8 @@ export default function PublicLandingPage({
                   </PillarDesc>
                 </PillarCard>
 
-                <PillarCard $accent="#7c3aed">
-                  <PillarIconWrap $accent="#7c3aed">📡</PillarIconWrap>
+                <PillarCard $accent="#374649">
+                  <PillarIconWrap $accent="#374649">📡</PillarIconWrap>
                   <PillarTitle>Disease Surveillance</PillarTitle>
                   <PillarDesc>
                     HMIS-integrated case notification, epidemic detection and
@@ -1316,8 +1300,8 @@ export default function PublicLandingPage({
                   </PillarDesc>
                 </PillarCard>
 
-                <PillarCard $accent="#d97706">
-                  <PillarIconWrap $accent="#d97706">🌿</PillarIconWrap>
+                <PillarCard $accent="#F2C80F">
+                  <PillarIconWrap $accent="#F2C80F">🌿</PillarIconWrap>
                   <PillarTitle>Preventive Chemotherapy</PillarTitle>
                   <PillarDesc>
                     Intermittent preventive treatment in pregnancy (IPTp) and
@@ -1326,8 +1310,8 @@ export default function PublicLandingPage({
                   </PillarDesc>
                 </PillarCard>
 
-                <PillarCard $accent="#dc2626">
-                  <PillarIconWrap $accent="#dc2626">🦟</PillarIconWrap>
+                <PillarCard $accent="#FD625E">
+                  <PillarIconWrap $accent="#FD625E">🦟</PillarIconWrap>
                   <PillarTitle>Entomology</PillarTitle>
                   <PillarDesc>
                     Continuous monitoring of vector species distribution,
@@ -1336,8 +1320,8 @@ export default function PublicLandingPage({
                   </PillarDesc>
                 </PillarCard>
 
-                <PillarCard $accent="#059669">
-                  <PillarIconWrap $accent="#059669">📢</PillarIconWrap>
+                <PillarCard $accent="#107C10">
+                  <PillarIconWrap $accent="#107C10">📢</PillarIconWrap>
                   <PillarTitle>Health Promotion</PillarTitle>
                   <PillarDesc>
                     Community mobilisation, behaviour change communication and
