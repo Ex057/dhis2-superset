@@ -33,8 +33,6 @@ type PublicPageTheme = 'light' | 'dark';
 type PublicPageSidebarLayout = 'side' | 'top';
 
 const PUBLIC_PAGE_THEME_STORAGE_KEY = 'superset.publicLandingPage.theme';
-const PUBLIC_PAGE_SIDEBAR_LAYOUT_STORAGE_KEY =
-  'superset.publicLandingPage.sidebarLayout';
 
 const getStoredTheme = (): PublicPageTheme => {
   if (typeof window === 'undefined') {
@@ -67,39 +65,6 @@ const storeThemePreference = (theme: PublicPageTheme) => {
   }
 };
 
-const getStoredSidebarLayout = (): PublicPageSidebarLayout | null => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  try {
-    const storedLayout = window.localStorage.getItem(
-      PUBLIC_PAGE_SIDEBAR_LAYOUT_STORAGE_KEY,
-    );
-    if (storedLayout === 'side' || storedLayout === 'top') {
-      return storedLayout;
-    }
-  } catch (error) {
-    console.warn('Unable to read public page sidebar layout preference', error);
-  }
-
-  return null;
-};
-
-const storeSidebarLayoutPreference = (layout: PublicPageSidebarLayout) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(PUBLIC_PAGE_SIDEBAR_LAYOUT_STORAGE_KEY, layout);
-  } catch (error) {
-    console.warn(
-      'Unable to store public page sidebar layout preference',
-      error,
-    );
-  }
-};
 
 const hexToRgba = (hex: string, alpha: number): string => {
   const clean = hex.replace('#', '');
@@ -253,19 +218,19 @@ const HeroBadge = styled.div`
 `;
 
 const HeroTitle = styled.h1`
-  font-size: 38px;
+  font-size: 44px;
   font-weight: 800;
-  line-height: 1.15;
-  letter-spacing: -0.8px;
+  line-height: 1.12;
+  letter-spacing: -1px;
   color: var(--public-page-heading-color, #201F1E);
-  margin: 0 0 16px;
+  margin: 0 0 18px;
   @media (max-width: 768px) {
-    font-size: 28px;
+    font-size: 30px;
   }
 `;
 
 const HeroSubtitle = styled.p`
-  font-size: 16px;
+  font-size: 17px;
   line-height: 1.65;
   color: var(--public-page-text-secondary-color, #605E5C);
   margin: 0 0 32px;
@@ -412,9 +377,9 @@ const KPIBadge = styled.div<{ $color: string }>`
 `;
 
 const KPIValue = styled.div`
-  font-size: 30px;
+  font-size: 36px;
   font-weight: 800;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.6px;
   color: #201F1E;
   line-height: 1;
   margin-bottom: 6px;
@@ -425,168 +390,152 @@ const KPISubtext = styled.div`
   color: #A19F9D;
 `;
 
-/* ── Program content sections ── */
-const ProgramSection = styled.section`
-  padding: 56px 48px;
-  @media (max-width: 768px) {
-    padding: 40px 24px;
-  }
-`;
-
-const ProgramSectionAlt = styled.section`
-  padding: 56px 48px;
+/* ── Programme pills (compact) ── */
+const ProgramPillsSection = styled.section`
+  padding: 32px 48px 28px;
   background: var(--public-page-kpi-bg, #ffffff);
+  border-top: 1px solid #EDEBE9;
   @media (max-width: 768px) {
-    padding: 40px 24px;
+    padding: 24px 20px;
   }
 `;
 
-const SectionLabel = styled.div`
+const PillsSectionLabel = styled.div`
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.7px;
+  letter-spacing: 0.8px;
   text-transform: uppercase;
-  color: #0078D4;
-  margin-bottom: 10px;
+  color: #A19F9D;
+  margin-bottom: 16px;
 `;
 
-const SectionHeading = styled.h2`
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.4px;
-  line-height: 1.25;
-  color: #201F1E;
-  margin: 0 0 12px;
-`;
-
-const SectionBody = styled.p`
-  font-size: 15px;
-  line-height: 1.7;
-  color: #605E5C;
-  max-width: 680px;
-  margin: 0;
-`;
-
-/* Pillar cards */
-const PillarsGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin-top: 36px;
-  @media (max-width: 900px) {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  @media (max-width: 560px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
-const PillarCard = styled.div<{ $accent: string }>`
-  background: #ffffff;
-  border: 1px solid #EDEBE9;
-  border-top: 3px solid ${({ $accent }) => $accent};
-  border-radius: 6px;
-  padding: 20px 20px 22px;
+const PillsRow = styled.div`
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 10px;
 `;
 
-const PillarIconWrap = styled.div<{ $accent: string }>`
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: ${({ $accent }) => $accent}18;
+const ProgramPill = styled.div<{ $accent: string }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #ffffff;
+  border: 1px solid #EDEBE9;
+  border-left: 3px solid ${({ $accent }) => $accent};
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #201F1E;
+  white-space: nowrap;
+`;
+
+/* ── Live Indicator Highlights ── */
+const HighlightsSection = styled.section`
+  padding: 40px 48px 48px;
+  @media (max-width: 768px) {
+    padding: 32px 20px 40px;
+  }
+`;
+
+const HighlightsSectionHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 8px;
+`;
+
+const HighlightsSectionTitle = styled.h2`
+  font-size: 18px;
+  font-weight: 700;
+  color: #201F1E;
+  margin: 0;
+  letter-spacing: -0.3px;
+`;
+
+const HighlightsSectionSub = styled.div`
+  font-size: 13px;
+  color: #A19F9D;
+`;
+
+const HighlightsGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+`;
+
+const HighlightCard = styled.div`
+  background: #ffffff;
+  border: 1px solid #EDEBE9;
+  border-radius: 4px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s ease;
+  &:hover {
+    border-color: #0078D4;
+  }
+`;
+
+const HighlightIndicatorName = styled.div`
+  font-size: 12px;
+  font-weight: 600;
+  color: #605E5C;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+const HighlightValue = styled.div`
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: #201F1E;
+  line-height: 1.1;
+`;
+
+const HighlightMeta = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+`;
+
+const HighlightMetaTag = styled.div`
+  font-size: 11px;
+  color: #A19F9D;
+  background: #FAF9F8;
+  border: 1px solid #EDEBE9;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-weight: 500;
+`;
+
+const HighlightEmptyState = styled.div`
+  grid-column: 1 / -1;
+  padding: 48px 24px;
+  text-align: center;
+  color: #A19F9D;
+  font-size: 15px;
+  border: 1px dashed #EDEBE9;
+  border-radius: 4px;
+`;
+
+const HighlightLoadingRow = styled.div`
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  flex-shrink: 0;
-`;
-
-const PillarTitle = styled.div`
-  font-size: 14px;
-  font-weight: 700;
-  color: #201F1E;
-  line-height: 1.3;
-`;
-
-const PillarDesc = styled.div`
-  font-size: 13px;
-  line-height: 1.55;
-  color: #605E5C;
-`;
-
-/* Strategic targets */
-const TargetsRow = styled.div`
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0;
-  border: 1px solid #EDEBE9;
-  border-radius: 8px;
-  overflow: hidden;
-  margin-top: 36px;
-  @media (max-width: 600px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
-const TargetItem = styled.div`
-  padding: 28px 24px;
-  border-right: 1px solid #EDEBE9;
-  text-align: center;
-  background: #ffffff;
-  &:last-child { border-right: none; }
-  @media (max-width: 600px) {
-    border-right: none;
-    border-bottom: 1px solid #EDEBE9;
-    &:last-child { border-bottom: none; }
-  }
-`;
-
-const TargetValue = styled.div`
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  color: #0078D4;
-  line-height: 1;
-  margin-bottom: 8px;
-`;
-
-const TargetLabel = styled.div`
-  font-size: 13px;
-  font-weight: 600;
-  color: #201F1E;
-  margin-bottom: 4px;
-`;
-
-const TargetSubtext = styled.div`
-  font-size: 12px;
+  padding: 40px;
+  gap: 10px;
   color: #A19F9D;
-  line-height: 1.4;
-`;
-
-/* Partners row */
-const PartnersRow = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 24px;
-`;
-
-const PartnerChip = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: #F3F2F1;
-  border: 1px solid #EDEBE9;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #605E5C;
-  white-space: nowrap;
+  font-size: 14px;
 `;
 
 /* ── Data sources strip ── */
@@ -885,6 +834,17 @@ const MegaMenuClose = styled.button`
   }
 `;
 
+interface IndicatorHighlight {
+  indicator_name: string;
+  canonical_metric_key: string | null;
+  dataset_name: string;
+  instance_name: string;
+  period: string;
+  value: string;
+  value_raw: number | null;
+  ingested_at: string | null;
+}
+
 interface PublicLandingPageProps {
   /** Optional override configuration */
   overrideConfig?: Partial<PublicPageLayoutConfig>;
@@ -900,12 +860,12 @@ export default function PublicLandingPage({
     Dashboard | undefined
   >(undefined);
   const [themeMode, setThemeMode] = useState<PublicPageTheme>(getStoredTheme);
-  const [sidebarLayout, setSidebarLayout] = useState<PublicPageSidebarLayout>(
-    getStoredSidebarLayout() || 'top',
-  );
+  const sidebarLayout: PublicPageSidebarLayout = 'top';
   const [navDashboards, setNavDashboards] = useState<Dashboard[]>([]);
   const [megaMenuOpen, setMegaMenuOpen] = useState(false);
   const megaMenuRef = useRef<HTMLDivElement>(null);
+  const [indicatorHighlights, setIndicatorHighlights] = useState<IndicatorHighlight[]>([]);
+  const [highlightsLoading, setHighlightsLoading] = useState(true);
 
   // Merge override config if provided
   useEffect(() => {
@@ -920,6 +880,23 @@ export default function PublicLandingPage({
     SupersetClient.get({ endpoint: '/api/v1/dashboard/public/' })
       .then(({ json }) => setNavDashboards(json.result || []))
       .catch(() => {});
+  }, []);
+
+  // Fetch live indicator highlights from staged datasets
+  useEffect(() => {
+    setHighlightsLoading(true);
+    SupersetClient.get({
+      endpoint: '/api/v1/public_page/indicator_highlights?limit=12',
+    })
+      .then(({ json }) => {
+        setIndicatorHighlights(json.result || []);
+      })
+      .catch(() => {
+        setIndicatorHighlights([]);
+      })
+      .finally(() => {
+        setHighlightsLoading(false);
+      });
   }, []);
 
   const handleLogin = () => {
@@ -944,10 +921,6 @@ export default function PublicLandingPage({
   useEffect(() => {
     storeThemePreference(themeMode);
   }, [themeMode]);
-
-  useEffect(() => {
-    storeSidebarLayoutPreference(sidebarLayout);
-  }, [sidebarLayout]);
 
   const themeVariables = useMemo<CSSProperties>(
     () =>
@@ -1022,11 +995,6 @@ export default function PublicLandingPage({
     );
   };
 
-  const handleSidebarLayoutToggle = () => {
-    setSidebarLayout(previousLayout =>
-      previousLayout === 'side' ? 'top' : 'side',
-    );
-  };
 
   if (configLoading) {
     return (
@@ -1255,147 +1223,64 @@ export default function PublicLandingPage({
               </KPICard>
             </KPIBand>
 
-            {/* Programme Mission */}
-            <ProgramSection>
-              <SectionLabel>About the Programme</SectionLabel>
-              <SectionHeading>National Malaria Control Programme</SectionHeading>
-              <SectionBody>
-                The National Malaria Control Programme (NMCP) coordinates Uganda's
-                comprehensive response to malaria under the Ministry of Health.
-                Working towards the targets set in Uganda's National Malaria
-                Strategic Plan, the programme integrates prevention, diagnosis,
-                treatment and surveillance activities across all 146 districts —
-                with the ultimate goal of reducing malaria morbidity and mortality
-                to pre-elimination levels by 2030.
-              </SectionBody>
+            {/* Programme pillars — compact pills */}
+            <ProgramPillsSection>
+              <PillsSectionLabel>NMCP Programme Pillars</PillsSectionLabel>
+              <PillsRow>
+                <ProgramPill $accent="#01B8AA">🔬 Case Management</ProgramPill>
+                <ProgramPill $accent="#0078D4">🏠 Vector Control</ProgramPill>
+                <ProgramPill $accent="#374649">📡 Disease Surveillance</ProgramPill>
+                <ProgramPill $accent="#F2C80F">🌿 Preventive Chemotherapy</ProgramPill>
+                <ProgramPill $accent="#FD625E">🦟 Entomology</ProgramPill>
+                <ProgramPill $accent="#107C10">📢 Health Promotion</ProgramPill>
+              </PillsRow>
+            </ProgramPillsSection>
 
-              <PillarsGrid>
-                <PillarCard $accent="#01B8AA">
-                  <PillarIconWrap $accent="#01B8AA">🔬</PillarIconWrap>
-                  <PillarTitle>Case Management</PillarTitle>
-                  <PillarDesc>
-                    Prompt diagnosis with RDTs and microscopy, and treatment with
-                    artemisinin-based combination therapy (ACT) through health
-                    facilities and community health workers.
-                  </PillarDesc>
-                </PillarCard>
+            {/* Live indicator highlights from staged datasets */}
+            <HighlightsSection>
+              <HighlightsSectionHeader>
+                <div>
+                  <HighlightsSectionTitle>Live Indicator Highlights</HighlightsSectionTitle>
+                  <HighlightsSectionSub>
+                    Latest values from HMIS/DHIS2 staged datasets · Updated automatically
+                  </HighlightsSectionSub>
+                </div>
+              </HighlightsSectionHeader>
+              <HighlightsGrid>
+                {highlightsLoading ? (
+                  <HighlightLoadingRow>
+                    <Loading size="s" />
+                    Loading indicators…
+                  </HighlightLoadingRow>
+                ) : indicatorHighlights.length === 0 ? (
+                  <HighlightEmptyState>
+                    No indicator data available yet. Connect a DHIS2 instance and sync a dataset to see live highlights here.
+                  </HighlightEmptyState>
+                ) : (
+                  indicatorHighlights.map((h, idx) => (
+                    <HighlightCard key={`${h.canonical_metric_key || h.indicator_name}-${idx}`}>
+                      <HighlightIndicatorName title={h.indicator_name}>
+                        {h.indicator_name}
+                      </HighlightIndicatorName>
+                      <HighlightValue>{h.value}</HighlightValue>
+                      <HighlightMeta>
+                        <HighlightMetaTag>{h.period}</HighlightMetaTag>
+                        <HighlightMetaTag>{h.instance_name}</HighlightMetaTag>
+                      </HighlightMeta>
+                    </HighlightCard>
+                  ))
+                )}
+              </HighlightsGrid>
+            </HighlightsSection>
 
-                <PillarCard $accent="#0078D4">
-                  <PillarIconWrap $accent="#0078D4">🏠</PillarIconWrap>
-                  <PillarTitle>Vector Control</PillarTitle>
-                  <PillarDesc>
-                    Universal LLIN coverage campaigns and targeted indoor residual
-                    spraying (IRS) in high-burden districts to reduce
-                    human–mosquito contact.
-                  </PillarDesc>
-                </PillarCard>
-
-                <PillarCard $accent="#374649">
-                  <PillarIconWrap $accent="#374649">📡</PillarIconWrap>
-                  <PillarTitle>Disease Surveillance</PillarTitle>
-                  <PillarDesc>
-                    HMIS-integrated case notification, epidemic detection and
-                    response, malaria indicator surveys, and routine programme
-                    data quality assurance.
-                  </PillarDesc>
-                </PillarCard>
-
-                <PillarCard $accent="#F2C80F">
-                  <PillarIconWrap $accent="#F2C80F">🌿</PillarIconWrap>
-                  <PillarTitle>Preventive Chemotherapy</PillarTitle>
-                  <PillarDesc>
-                    Intermittent preventive treatment in pregnancy (IPTp) and
-                    seasonal malaria chemoprevention (SMC) in high-transmission
-                    zones to protect the most vulnerable populations.
-                  </PillarDesc>
-                </PillarCard>
-
-                <PillarCard $accent="#FD625E">
-                  <PillarIconWrap $accent="#FD625E">🦟</PillarIconWrap>
-                  <PillarTitle>Entomology</PillarTitle>
-                  <PillarDesc>
-                    Continuous monitoring of vector species distribution,
-                    insecticide resistance patterns and malaria transmission
-                    intensity to guide intervention strategies.
-                  </PillarDesc>
-                </PillarCard>
-
-                <PillarCard $accent="#107C10">
-                  <PillarIconWrap $accent="#107C10">📢</PillarIconWrap>
-                  <PillarTitle>Health Promotion</PillarTitle>
-                  <PillarDesc>
-                    Community mobilisation, behaviour change communication and
-                    social and behaviour change (SBC) programmes to promote
-                    prevention and early care-seeking.
-                  </PillarDesc>
-                </PillarCard>
-              </PillarsGrid>
-            </ProgramSection>
-
-            {/* Strategic targets */}
-            <ProgramSectionAlt>
-              <SectionLabel>Strategic Targets · NMSP V</SectionLabel>
-              <SectionHeading>2020–2025 National Malaria Strategic Plan</SectionHeading>
-              <SectionBody>
-                Uganda's fifth National Malaria Strategic Plan sets ambitious
-                targets aligned with the RBM/WHO global framework for malaria
-                elimination, measuring progress against baseline data from the
-                2018–2019 Uganda Malaria Indicator Survey.
-              </SectionBody>
-
-              <TargetsRow>
-                <TargetItem>
-                  <TargetValue>≥80%</TargetValue>
-                  <TargetLabel>LLIN Household Coverage</TargetLabel>
-                  <TargetSubtext>
-                    Proportion of households with at least one LLIN per two people
-                  </TargetSubtext>
-                </TargetItem>
-                <TargetItem>
-                  <TargetValue>≥95%</TargetValue>
-                  <TargetLabel>Confirmed Case Treatment</TargetLabel>
-                  <TargetSubtext>
-                    Confirmed malaria cases receiving first-line artemisinin therapy
-                  </TargetSubtext>
-                </TargetItem>
-                <TargetItem>
-                  <TargetValue>≥90%</TargetValue>
-                  <TargetLabel>IPTp3+ Coverage</TargetLabel>
-                  <TargetSubtext>
-                    Pregnant women receiving three or more doses of IPTp-SP
-                  </TargetSubtext>
-                </TargetItem>
-              </TargetsRow>
-            </ProgramSectionAlt>
-
-            {/* Partners & data sources */}
-            <ProgramSection>
-              <SectionLabel>Implementing Partners &amp; Data Sources</SectionLabel>
-              <SectionHeading>Programme Data Infrastructure</SectionHeading>
-              <SectionBody>
-                This analytics repository integrates data from Uganda's national
-                health information systems and partner organisations to provide
-                a unified view of malaria programme performance.
-              </SectionBody>
-
-              <PartnersRow>
-                <PartnerChip>🏥 HMIS / DHIS2</PartnerChip>
-                <PartnerChip>📋 NMCP Uganda</PartnerChip>
-                <PartnerChip>🌐 WHO Uganda</PartnerChip>
-                <PartnerChip>🤝 Global Fund</PartnerChip>
-                <PartnerChip>🇺🇸 PMI / USAID</PartnerChip>
-                <PartnerChip>🧬 MRC Uganda</PartnerChip>
-                <PartnerChip>📊 UBOS</PartnerChip>
-              </PartnersRow>
-
-              <DataSourcesStrip style={{ marginTop: 24, padding: '16px 0', background: 'transparent', border: 'none' }}>
-                <DataSourcesLabel>Integrated data feeds</DataSourcesLabel>
-                <DataSourceItem><DataSourceDot />HMIS / DHIS2 — National health information system</DataSourceItem>
-                <DataSourceItem><DataSourceDot />NMCP — Programme surveillance &amp; survey data</DataSourceItem>
-                <DataSourceItem><DataSourceDot />iCCM — Community case management systems</DataSourceItem>
-                <DataSourceItem><DataSourceDot />Entomological monitoring networks</DataSourceItem>
-              </DataSourcesStrip>
-            </ProgramSection>
+            {/* Data sources strip */}
+            <DataSourcesStrip>
+              <DataSourcesLabel>Data feeds</DataSourcesLabel>
+              <DataSourceItem><DataSourceDot />HMIS / DHIS2 — National health information system</DataSourceItem>
+              <DataSourceItem><DataSourceDot />NMCP — Programme surveillance &amp; survey data</DataSourceItem>
+              <DataSourceItem><DataSourceDot />iCCM — Community case management systems</DataSourceItem>
+              <DataSourceItem><DataSourceDot />Entomological monitoring networks</DataSourceItem>
+            </DataSourcesStrip>
           </>
         )}
       </ContentWrapper>

@@ -18,11 +18,13 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from flask import current_app, Response
+from flask import current_app, request, Response
 from flask_appbuilder.api import BaseApi, expose
+from sqlalchemy import func, text
 
-from superset.extensions import event_logger
+from superset.extensions import db, event_logger
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,140 @@ class PublicPageRestApi(BaseApi):
         except Exception as ex:
             logger.error(f"Error fetching public page config: {ex}")
             return self.response_500(message=str(ex))
+
+    @expose("/indicator_highlights", methods=("GET",))
+    def indicator_highlights(self) -> Response:
+        """Return latest indicator values from staged datasets for public display.
+        ---
+        get:
+          summary: Get public indicator highlights
+          description: >-
+            Returns the most recent indicator observation per field per source
+            instance from all active staged datasets. Used to populate the
+            public landing page KPI band and live highlights section.
+            No authentication required.
+          parameters:
+            - in: query
+              name: limit
+              schema:
+                type: integer
+                default: 20
+              description: Maximum number of highlights to return
+          responses:
+            200:
+              description: Indicator highlights
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      result:
+                        type: array
+                      count:
+                        type: integer
+            500:
+              $ref: '#/components/responses/500'
+        """
+        try:
+            limit = min(int(request.args.get("limit", 20)), 100)
+            highlights = self._fetch_indicator_highlights(limit)
+            return self.response(200, result=highlights, count=len(highlights))
+        except Exception as ex:
+            logger.warning("indicator_highlights error: %s", ex)
+            return self.response(200, result=[], count=0)
+
+    def _fetch_indicator_highlights(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Query latest staged observations per (field, instance)."""
+        # Import here to avoid circular imports at module load
+        from superset.staging.models import StagedDataset, StagedDatasetField, StageObservation
+        from superset.dhis2.models import DHIS2Instance
+
+        # Subquery: latest period_key per (dataset_field_id, source_instance_id)
+        latest_sub = (
+            db.session.query(
+                StageObservation.dataset_field_id,
+                StageObservation.source_instance_id,
+                func.max(StageObservation.period_key).label("max_period"),
+            )
+            .filter(
+                (StageObservation.value_numeric.isnot(None))
+                | (StageObservation.value_text.isnot(None))
+            )
+            .group_by(
+                StageObservation.dataset_field_id,
+                StageObservation.source_instance_id,
+            )
+            .subquery()
+        )
+
+        rows = (
+            db.session.query(
+                StagedDatasetField.source_field_label,
+                StagedDatasetField.dataset_alias,
+                StagedDatasetField.canonical_metric_key,
+                StagedDataset.name.label("dataset_name"),
+                DHIS2Instance.name.label("instance_name"),
+                StageObservation.period_key,
+                StageObservation.value_numeric,
+                StageObservation.value_text,
+                StageObservation.ingested_at,
+            )
+            .join(
+                StageObservation,
+                (StageObservation.dataset_field_id == StagedDatasetField.id)
+                & (
+                    StageObservation.source_instance_id
+                    == latest_sub.c.source_instance_id
+                )
+                & (StageObservation.period_key == latest_sub.c.max_period),
+            )
+            .join(latest_sub, (
+                latest_sub.c.dataset_field_id == StagedDatasetField.id
+            ))
+            .join(StagedDataset, StagedDataset.id == StagedDatasetField.dataset_id)
+            .outerjoin(
+                DHIS2Instance,
+                DHIS2Instance.id == StageObservation.source_instance_id,
+            )
+            .filter(
+                StagedDataset.last_sync_status.in_(["success", "partial"]),
+                (StageObservation.value_numeric.isnot(None))
+                | (StageObservation.value_text.isnot(None)),
+            )
+            .order_by(StageObservation.ingested_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        results = []
+        for row in rows:
+            value = row.value_numeric
+            display_value: str
+            if value is not None:
+                # Format: large numbers abbreviated, decimals to 1 dp
+                if value >= 1_000_000:
+                    display_value = f"{value / 1_000_000:.1f}M"
+                elif value >= 1_000:
+                    display_value = f"{value / 1_000:.1f}K"
+                elif value == int(value):
+                    display_value = f"{int(value):,}"
+                else:
+                    display_value = f"{value:.1f}"
+            else:
+                display_value = str(row.value_text or "—")
+
+            results.append({
+                "indicator_name": row.source_field_label or row.dataset_alias or "Indicator",
+                "canonical_metric_key": row.canonical_metric_key,
+                "dataset_name": row.dataset_name,
+                "instance_name": row.instance_name or "National",
+                "period": row.period_key or "—",
+                "value_raw": value,
+                "value": display_value,
+                "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
+            })
+
+        return results
 
     def _merge_config(self, default: dict, override: dict) -> dict:
         """Deep merge configuration dictionaries."""
