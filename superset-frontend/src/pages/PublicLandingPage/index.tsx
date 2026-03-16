@@ -425,33 +425,168 @@ const KPISubtext = styled.div`
   color: #9ca3af;
 `;
 
-/* ── Section header ── */
-const SectionContainer = styled.div`
-  padding: 40px 48px 24px;
+/* ── Program content sections ── */
+const ProgramSection = styled.section`
+  padding: 56px 48px;
   @media (max-width: 768px) {
-    padding: 32px 24px 16px;
+    padding: 40px 24px;
   }
 `;
 
-const SectionHeader = styled.div`
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 16px;
+const ProgramSectionAlt = styled.section`
+  padding: 56px 48px;
+  background: var(--public-page-kpi-bg, #ffffff);
+  @media (max-width: 768px) {
+    padding: 40px 24px;
+  }
 `;
 
-const SectionTitle = styled.h2`
-  font-size: 18px;
+const SectionLabel = styled.div`
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: #2b6a6a;
+  margin-bottom: 10px;
+`;
+
+const SectionHeading = styled.h2`
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  line-height: 1.25;
   color: #1e2d45;
+  margin: 0 0 12px;
+`;
+
+const SectionBody = styled.p`
+  font-size: 15px;
+  line-height: 1.7;
+  color: #4b5563;
+  max-width: 680px;
   margin: 0;
 `;
 
-const SectionSubtitle = styled.p`
+/* Pillar cards */
+const PillarsGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 36px;
+  @media (max-width: 900px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  @media (max-width: 560px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const PillarCard = styled.div<{ $accent: string }>`
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-top: 3px solid ${({ $accent }) => $accent};
+  border-radius: 6px;
+  padding: 20px 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+`;
+
+const PillarIconWrap = styled.div<{ $accent: string }>`
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: ${({ $accent }) => $accent}18;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+`;
+
+const PillarTitle = styled.div`
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e2d45;
+  line-height: 1.3;
+`;
+
+const PillarDesc = styled.div`
   font-size: 13px;
+  line-height: 1.55;
   color: #6b7280;
-  margin: 0;
+`;
+
+/* Strategic targets */
+const TargetsRow = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 36px;
+  @media (max-width: 600px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const TargetItem = styled.div`
+  padding: 28px 24px;
+  border-right: 1px solid #e5e7eb;
+  text-align: center;
+  background: #ffffff;
+  &:last-child { border-right: none; }
+  @media (max-width: 600px) {
+    border-right: none;
+    border-bottom: 1px solid #e5e7eb;
+    &:last-child { border-bottom: none; }
+  }
+`;
+
+const TargetValue = styled.div`
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: #2b6a6a;
+  line-height: 1;
+  margin-bottom: 8px;
+`;
+
+const TargetLabel = styled.div`
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e2d45;
+  margin-bottom: 4px;
+`;
+
+const TargetSubtext = styled.div`
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.4;
+`;
+
+/* Partners row */
+const PartnersRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+`;
+
+const PartnerChip = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
 `;
 
 /* ── Data sources strip ── */
@@ -520,50 +655,6 @@ const FreshnessDot = styled.div`
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
 `;
 
-/* ── Dashboard browse section ── */
-const DashboardBrowseSection = styled.div`
-  padding: 0 48px 40px;
-  @media (max-width: 768px) {
-    padding: 0 24px 32px;
-  }
-`;
-
-/* Keep backward compat for dashboard view */
-const WelcomeContainer = styled.div`
-  ${({ theme }) => `
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    min-height: 240px;
-    padding: ${theme.sizeUnit * 8}px ${theme.sizeUnit * 6}px;
-    text-align: center;
-    background: var(--public-page-welcome-bg, ${theme.colorBgContainer});
-    border-radius: ${theme.borderRadius}px;
-  `}
-`;
-
-const WelcomeTitle = styled.h1`
-  ${({ theme }) => `
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: -0.3px;
-    line-height: 1.2;
-    color: var(--public-page-heading-color, ${theme.colorTextHeading});
-    margin-bottom: ${theme.sizeUnit * 2}px;
-  `}
-`;
-
-const WelcomeDescription = styled.p`
-  ${({ theme }) => `
-    font-size: 14px;
-    line-height: 1.6;
-    margin-top: 0;
-    color: var(--public-page-text-secondary-color, ${theme.colorTextSecondary});
-    max-width: 480px;
-  `}
-`;
 
 const Footer = styled.div<{
   $height: number;
@@ -1118,7 +1209,11 @@ export default function PublicLandingPage({
                   decisions for malaria elimination across all districts.
                 </HeroSubtitle>
                 <HeroCTARow>
-                  <HeroCtaPrimary href="#dashboards">
+                  <HeroCtaPrimary
+                    as="button"
+                    onClick={() => setMegaMenuOpen(true)}
+                    style={{ border: 'none', cursor: 'pointer' }}
+                  >
                     View Dashboards →
                   </HeroCtaPrimary>
                   <HeroCtaSecondary href="/login/">
@@ -1176,43 +1271,147 @@ export default function PublicLandingPage({
               </KPICard>
             </KPIBand>
 
-            {/* Dashboard browse section */}
-            <DashboardBrowseSection id="dashboards">
-              <SectionContainer style={{ padding: '40px 0 16px' }}>
-                <SectionHeader>
-                  <div>
-                    <SectionTitle>Public Dashboards</SectionTitle>
-                    <SectionSubtitle style={{ marginTop: 4 }}>
-                      {t(content.welcomeDescription)}
-                    </SectionSubtitle>
-                  </div>
-                </SectionHeader>
-              </SectionContainer>
-              <ConfigurableSidebar
-                config={sidebar}
-                navbarHeight={0}
-                selectedKey={undefined}
-                onSelect={handleDashboardSelect}
-                layoutMode="top"
-              />
-              {content.showWelcomeMessage && (
-                <WelcomeContainer>
-                  <WelcomeTitle>{t(content.welcomeTitle)}</WelcomeTitle>
-                  <WelcomeDescription>
-                    {t(content.welcomeDescription)}
-                  </WelcomeDescription>
-                </WelcomeContainer>
-              )}
-            </DashboardBrowseSection>
+            {/* Programme Mission */}
+            <ProgramSection>
+              <SectionLabel>About the Programme</SectionLabel>
+              <SectionHeading>National Malaria Control Programme</SectionHeading>
+              <SectionBody>
+                The National Malaria Control Programme (NMCP) coordinates Uganda's
+                comprehensive response to malaria under the Ministry of Health.
+                Working towards the targets set in Uganda's National Malaria
+                Strategic Plan, the programme integrates prevention, diagnosis,
+                treatment and surveillance activities across all 146 districts —
+                with the ultimate goal of reducing malaria morbidity and mortality
+                to pre-elimination levels by 2030.
+              </SectionBody>
 
-            {/* Data sources strip */}
-            <DataSourcesStrip>
-              <DataSourcesLabel>Data sources</DataSourcesLabel>
-              <DataSourceItem><DataSourceDot />HMIS / DHIS2 — National health information</DataSourceItem>
-              <DataSourceItem><DataSourceDot />NMCP — Programme surveillance data</DataSourceItem>
-              <DataSourceItem><DataSourceDot />Community case management systems</DataSourceItem>
-              <DataSourceItem><DataSourceDot />Entomology &amp; vector surveillance</DataSourceItem>
-            </DataSourcesStrip>
+              <PillarsGrid>
+                <PillarCard $accent="#2b6a6a">
+                  <PillarIconWrap $accent="#2b6a6a">🔬</PillarIconWrap>
+                  <PillarTitle>Case Management</PillarTitle>
+                  <PillarDesc>
+                    Prompt diagnosis with RDTs and microscopy, and treatment with
+                    artemisinin-based combination therapy (ACT) through health
+                    facilities and community health workers.
+                  </PillarDesc>
+                </PillarCard>
+
+                <PillarCard $accent="#0284c7">
+                  <PillarIconWrap $accent="#0284c7">🏠</PillarIconWrap>
+                  <PillarTitle>Vector Control</PillarTitle>
+                  <PillarDesc>
+                    Universal LLIN coverage campaigns and targeted indoor residual
+                    spraying (IRS) in high-burden districts to reduce
+                    human–mosquito contact.
+                  </PillarDesc>
+                </PillarCard>
+
+                <PillarCard $accent="#7c3aed">
+                  <PillarIconWrap $accent="#7c3aed">📡</PillarIconWrap>
+                  <PillarTitle>Disease Surveillance</PillarTitle>
+                  <PillarDesc>
+                    HMIS-integrated case notification, epidemic detection and
+                    response, malaria indicator surveys, and routine programme
+                    data quality assurance.
+                  </PillarDesc>
+                </PillarCard>
+
+                <PillarCard $accent="#d97706">
+                  <PillarIconWrap $accent="#d97706">🌿</PillarIconWrap>
+                  <PillarTitle>Preventive Chemotherapy</PillarTitle>
+                  <PillarDesc>
+                    Intermittent preventive treatment in pregnancy (IPTp) and
+                    seasonal malaria chemoprevention (SMC) in high-transmission
+                    zones to protect the most vulnerable populations.
+                  </PillarDesc>
+                </PillarCard>
+
+                <PillarCard $accent="#dc2626">
+                  <PillarIconWrap $accent="#dc2626">🦟</PillarIconWrap>
+                  <PillarTitle>Entomology</PillarTitle>
+                  <PillarDesc>
+                    Continuous monitoring of vector species distribution,
+                    insecticide resistance patterns and malaria transmission
+                    intensity to guide intervention strategies.
+                  </PillarDesc>
+                </PillarCard>
+
+                <PillarCard $accent="#059669">
+                  <PillarIconWrap $accent="#059669">📢</PillarIconWrap>
+                  <PillarTitle>Health Promotion</PillarTitle>
+                  <PillarDesc>
+                    Community mobilisation, behaviour change communication and
+                    social and behaviour change (SBC) programmes to promote
+                    prevention and early care-seeking.
+                  </PillarDesc>
+                </PillarCard>
+              </PillarsGrid>
+            </ProgramSection>
+
+            {/* Strategic targets */}
+            <ProgramSectionAlt>
+              <SectionLabel>Strategic Targets · NMSP V</SectionLabel>
+              <SectionHeading>2020–2025 National Malaria Strategic Plan</SectionHeading>
+              <SectionBody>
+                Uganda's fifth National Malaria Strategic Plan sets ambitious
+                targets aligned with the RBM/WHO global framework for malaria
+                elimination, measuring progress against baseline data from the
+                2018–2019 Uganda Malaria Indicator Survey.
+              </SectionBody>
+
+              <TargetsRow>
+                <TargetItem>
+                  <TargetValue>≥80%</TargetValue>
+                  <TargetLabel>LLIN Household Coverage</TargetLabel>
+                  <TargetSubtext>
+                    Proportion of households with at least one LLIN per two people
+                  </TargetSubtext>
+                </TargetItem>
+                <TargetItem>
+                  <TargetValue>≥95%</TargetValue>
+                  <TargetLabel>Confirmed Case Treatment</TargetLabel>
+                  <TargetSubtext>
+                    Confirmed malaria cases receiving first-line artemisinin therapy
+                  </TargetSubtext>
+                </TargetItem>
+                <TargetItem>
+                  <TargetValue>≥90%</TargetValue>
+                  <TargetLabel>IPTp3+ Coverage</TargetLabel>
+                  <TargetSubtext>
+                    Pregnant women receiving three or more doses of IPTp-SP
+                  </TargetSubtext>
+                </TargetItem>
+              </TargetsRow>
+            </ProgramSectionAlt>
+
+            {/* Partners & data sources */}
+            <ProgramSection>
+              <SectionLabel>Implementing Partners &amp; Data Sources</SectionLabel>
+              <SectionHeading>Programme Data Infrastructure</SectionHeading>
+              <SectionBody>
+                This analytics repository integrates data from Uganda's national
+                health information systems and partner organisations to provide
+                a unified view of malaria programme performance.
+              </SectionBody>
+
+              <PartnersRow>
+                <PartnerChip>🏥 HMIS / DHIS2</PartnerChip>
+                <PartnerChip>📋 NMCP Uganda</PartnerChip>
+                <PartnerChip>🌐 WHO Uganda</PartnerChip>
+                <PartnerChip>🤝 Global Fund</PartnerChip>
+                <PartnerChip>🇺🇸 PMI / USAID</PartnerChip>
+                <PartnerChip>🧬 MRC Uganda</PartnerChip>
+                <PartnerChip>📊 UBOS</PartnerChip>
+              </PartnersRow>
+
+              <DataSourcesStrip style={{ marginTop: 24, padding: '16px 0', background: 'transparent', border: 'none' }}>
+                <DataSourcesLabel>Integrated data feeds</DataSourcesLabel>
+                <DataSourceItem><DataSourceDot />HMIS / DHIS2 — National health information system</DataSourceItem>
+                <DataSourceItem><DataSourceDot />NMCP — Programme surveillance &amp; survey data</DataSourceItem>
+                <DataSourceItem><DataSourceDot />iCCM — Community case management systems</DataSourceItem>
+                <DataSourceItem><DataSourceDot />Entomological monitoring networks</DataSourceItem>
+              </DataSourcesStrip>
+            </ProgramSection>
           </>
         )}
       </ContentWrapper>
