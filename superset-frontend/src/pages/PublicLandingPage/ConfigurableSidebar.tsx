@@ -60,9 +60,10 @@ const StyledSidebar = styled.div<{
     $layoutMode === 'top'
       ? `
         width: 100%;
-        min-height: 36px;
+        min-height: 44px;
         background: var(--public-page-sidebar-background, ${$backgroundColor});
-        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        border-bottom: 1px solid var(--public-page-welcome-border, rgba(0,0,0,0.08));
+        border-top: 1px solid var(--public-page-welcome-border, rgba(0,0,0,0.08));
         position: sticky;
         top: ${$navbarHeight}px;
         left: 0;
@@ -86,10 +87,10 @@ const StyledSidebar = styled.div<{
         z-index: 5;
         overflow-y: auto;
         scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+        scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
         &::-webkit-scrollbar { width: 4px; }
         &::-webkit-scrollbar-track { background: transparent; }
-        &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 2px; }
+        &::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.15); border-radius: 2px; }
       `}
   transition: all 0.3s ease;
 
@@ -112,20 +113,21 @@ const StyledMenu = styled(Menu)<{ $layoutMode: 'side' | 'top' }>`
     background: transparent;
     border-right: none;
     padding: ${$layoutMode === 'top' ? '0' : `${theme.sizeUnit * 2}px 0`};
-    height: ${$layoutMode === 'top' ? '36px' : 'auto'};
-    line-height: ${$layoutMode === 'top' ? '36px' : 'inherit'};
+    height: ${$layoutMode === 'top' ? '44px' : 'auto'};
+    line-height: ${$layoutMode === 'top' ? '44px' : 'inherit'};
 
     .ant-menu-item {
-      height: ${$layoutMode === 'top' ? '36px' : 'auto'};
-      line-height: ${$layoutMode === 'top' ? '36px' : '1.4'};
+      height: ${$layoutMode === 'top' ? '44px' : 'auto'};
+      line-height: ${$layoutMode === 'top' ? '44px' : '1.4'};
       padding: ${$layoutMode === 'top'
-        ? `0 ${theme.sizeUnit * 3}px`
+        ? `0 ${theme.sizeUnit * 4}px`
         : `${theme.sizeUnit * 2}px ${theme.sizeUnit * 3}px`} !important;
-      margin: 0 ${$layoutMode === 'top' ? '1px' : '0'};
+      margin: 0;
       display: flex;
       align-items: center;
       color: var(--public-page-sidebar-text-color, ${theme.colorText});
-      font-size: 13px;
+      font-size: 14px;
+      font-weight: 500;
       border-radius: 0;
       white-space: nowrap;
 
@@ -140,7 +142,7 @@ const StyledMenu = styled(Menu)<{ $layoutMode: 'side' | 'top' }>`
         ${$layoutMode === 'top'
           ? `
           border-bottom: 2px solid var(--public-page-primary-color, ${theme.colorPrimary});
-          background: rgba(255,255,255,0.06);
+          background: var(--public-page-primary-bg, rgba(43,106,106,0.06));
         `
           : `
           background: var(--public-page-primary-bg, ${theme.colorPrimaryBg});
@@ -179,7 +181,7 @@ const SidebarTitle = styled.div`
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
-    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    border-bottom: 1px solid var(--public-page-welcome-border, rgba(0,0,0,0.08));
     margin-bottom: ${theme.sizeUnit}px;
   `}
 `;
@@ -189,20 +191,10 @@ const TopBarInner = styled.div`
   align-items: center;
   gap: 0;
   min-width: max-content;
-  padding: 0 12px;
-  height: 36px;
+  padding: 0 16px;
+  height: 44px;
 `;
 
-const TopBarTitle = styled.div`
-  ${({ theme }) => `
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--public-page-sidebar-text-color, ${theme.colorTextSecondary});
-    white-space: nowrap;
-  `}
-`;
 
 const LoadingContainer = styled.div`
   ${({ theme }) => `
