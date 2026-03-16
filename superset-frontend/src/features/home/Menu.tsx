@@ -200,6 +200,28 @@ const StyledHeader = styled.header`
         }
       }
 
+      /* ── Right-side menu: ensure white text on dark navbar ── */
+      .ant-menu-horizontal.ant-menu > .ant-menu-item,
+      .ant-menu-horizontal.ant-menu > .ant-menu-submenu {
+        color: rgba(255, 255, 255, 0.9);
+      }
+
+      /* User/settings icons and text in right menu */
+      .ant-menu-item .anticon,
+      .ant-menu-item svg,
+      .ant-menu-submenu .anticon,
+      .ant-menu-submenu svg {
+        color: rgba(255, 255, 255, 0.85);
+      }
+
+      /* Any stray anchor tags (Settings link, etc.) */
+      .ant-menu-item a,
+      .ant-menu-submenu a,
+      header a:not([class*="ant-btn"]) {
+        color: rgba(255, 255, 255, 0.9) !important;
+        &:hover { color: #ffffff !important; }
+      }
+
       @media (max-width: 767px) {
         .ant-menu-item {
           padding: 0 ${theme.sizeUnit * 6}px 0
@@ -436,10 +458,11 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     },
   };
 
-  // Menu items that should go into settings dropdown
-  const settingsMenus = {
+  // Menu items that should go into settings dropdown (removed from main nav)
+  const settingsMenus: Record<string, boolean> = {
     Security: true,
     Manage: true,
+    Settings: true,
   };
 
   const isDataMenu = (item: MenuObjectProps) =>
@@ -568,29 +591,46 @@ export default function MenuWrapper({ data, ...rest }: MenuProps) {
     }
   });
 
-  settings.forEach(item => {
-    if (!isDHIS2Menu(item)) {
-      return;
-    }
+  // URLs that belong in the Data menu rather than Settings
+  const dataRelatedUrls = [
+    '/databaseview',
+    '/tablemodelview',
+    '/rowlevelsecurity',
+    '/dataset',
+  ];
+  const isDataRelatedChild = (child: MenuObjectChildProps) =>
+    dataRelatedUrls.some(prefix => child.url?.startsWith(prefix));
 
-    if (item.url) {
-      movedDataChildren.push({
-        name: 'DHIS2',
-        label: 'DHIS2',
-        url: item.url,
+  settings.forEach(item => {
+    // Move DHIS2 children to Data
+    if (isDHIS2Menu(item)) {
+      if (item.url) {
+        movedDataChildren.push({ name: 'DHIS2', label: 'DHIS2', url: item.url });
+      }
+      item.childs?.forEach(child => {
+        if (typeof child !== 'string' && child.url?.startsWith('/superset/dhis2/')) {
+          movedDataChildren.push(child);
+        }
       });
     }
+
+    // Move any data-related children (Databases, Datasets) from Settings → Data
     item.childs?.forEach(child => {
-      if (
-        typeof child !== 'string' &&
-        child.url?.startsWith('/superset/dhis2/')
-      ) {
+      if (typeof child !== 'string' && isDataRelatedChild(child)) {
         movedDataChildren.push(child);
       }
     });
   });
 
-  const filteredSettings = settings.filter(item => !isDHIS2Menu(item));
+  const filteredSettings = settings
+    .filter(item => !isDHIS2Menu(item))
+    .map(item => ({
+      ...item,
+      // Strip data-related children from settings dropdown (they moved to Data)
+      childs: item.childs?.filter(
+        child => typeof child === 'string' || !isDataRelatedChild(child as MenuObjectChildProps),
+      ),
+    }));
   const existingDataMenu = cleanedMenu.find(isDataMenu);
   const cleanedMenuWithoutData = cleanedMenu.filter(item => !isDataMenu(item));
 
