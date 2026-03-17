@@ -507,6 +507,14 @@ SQL"
       sleep 1
 
       mkdir -p '$SUPERSET_HOME' '$CONFIG_DIR' '$BACKUP_DIR'
+
+      # Pre-clean WORK_SRC bottom-up BEFORE the broad find-delete below.
+      # node_modules trees cause "Directory not empty" on overlay FS when
+      # rm -rf tries to delete them top-down; find -depth deletes leaves first.
+      if [ -d '$WORK_SRC' ]; then
+        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' || true
+      fi
+
       find /opt -mindepth 1 -maxdepth 1 ! -name 'superset' -exec rm -rf {} +
       find '$SUPERSET_HOME' -mindepth 1 -maxdepth 1 ! -name 'config' ! -name 'backups' ! -name 'src' -exec rm -rf {} +
 
@@ -516,14 +524,7 @@ SQL"
       rm -rf '$CT_SRC_DIR' 2>/dev/null || true
       rmdir '$CT_SRC_DIR' 2>/dev/null || true
 
-      mkdir -p '$CONFIG_DIR' '$BACKUP_DIR' '$LOG_DIR' '$WORK_DIR'
-      # Use find -depth -delete first so deeply-nested node_modules (which
-      # can cause 'Directory not empty' on rm -rf due to inode limits or
-      # overlay FS quirks) is removed bottom-up before the final rm.
-      if [ -d '$WORK_SRC' ]; then
-        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' || true
-      fi
-      mkdir -p '$WORK_SRC'
+      mkdir -p '$CONFIG_DIR' '$BACKUP_DIR' '$LOG_DIR' '$WORK_DIR' '$WORK_SRC'
     "
   }
 
