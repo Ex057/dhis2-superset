@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { SupersetClient, t } from '@superset-ui/core';
 import { Typography } from '@superset-ui/core/components';
 import {
+  Alert,
   Badge,
   Button,
   Card,
+  Collapse,
   Empty,
   Popconfirm,
   Progress,
@@ -17,18 +19,27 @@ import {
   Tooltip,
 } from 'antd';
 import {
+  CheckCircleOutlined,
+  CloseCircleOutlined,
   DeleteOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   StopOutlined,
   SyncOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 
 import DHIS2PageLayout from 'src/features/dhis2/DHIS2PageLayout';
-import type { DHIS2AnyJob, DHIS2MetadataJob, DHIS2SyncJob } from 'src/features/dhis2/types';
+import type {
+  DHIS2AnyJob,
+  DHIS2MetadataJob,
+  DHIS2RequestLog,
+  DHIS2RequestLogSummary,
+  DHIS2SyncJob,
+} from 'src/features/dhis2/types';
 import useDHIS2Databases from 'src/features/dhis2/useDHIS2Databases';
 import {
   formatDateTime,
@@ -59,6 +70,10 @@ export default function DHIS2SyncHistory() {
   const [limit, setLimit] = useState(50);
   const [typeFilter, setTypeFilter] = useState<'both' | 'sync' | 'metadata'>('both');
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
+  // Per-job request logs: keyed by job id, fetched lazily on row expand
+  const [requestLogs, setRequestLogs] = useState<
+    Record<number, { logs: DHIS2RequestLog[]; summary: DHIS2RequestLogSummary | null; loading: boolean }>
+  >({});
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPollingRef = useRef(false);
 
@@ -176,6 +191,28 @@ export default function DHIS2SyncHistory() {
     },
     [addSuccessToast, addDangerToast],
   );
+
+  const fetchRequestLogs = useCallback(async (jobId: number) => {
+    setRequestLogs(prev => ({ ...prev, [jobId]: { logs: [], summary: null, loading: true } }));
+    try {
+      const resp = await SupersetClient.get({
+        endpoint: `/api/v1/dhis2/jobs/sync/${jobId}/requests`,
+      });
+      setRequestLogs(prev => ({
+        ...prev,
+        [jobId]: {
+          logs: resp.json.result || [],
+          summary: resp.json.summary || null,
+          loading: false,
+        },
+      }));
+    } catch {
+      setRequestLogs(prev => ({
+        ...prev,
+        [jobId]: { logs: [], summary: null, loading: false },
+      }));
+    }
+  }, []);
 
   const successCount = jobs.filter(j => j.status === 'success').length;
   const failedCount = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
@@ -447,38 +484,352 @@ export default function DHIS2SyncHistory() {
                 },
               ]}
               expandable={{
+                onExpand: (expanded: boolean, job: DHIS2AnyJob) => {
+                  if (expanded && isSyncJob(job) && !requestLogs[job.id]) {
+                    void fetchRequestLogs(job.id);
+                  }
+                },
                 expandedRowRender: (job: DHIS2AnyJob) => {
                   const results = job.instance_results || {};
-                  const entries = Object.entries(results);
-                  if (!entries.length) {
-                    return <Text type="secondary">{t('No instance details')}</Text>;
-                  }
+                  const instEntries = Object.entries(results);
+                  const logData = isSyncJob(job) ? requestLogs[job.id] : undefined;
+
                   return (
-                    <Space direction="vertical" size="small">
-                      {entries.map(([instId, result]) => {
-                        const r = result as Record<string, unknown>;
-                        return (
-                          <Card key={instId} size="small">
-                            <Space direction="vertical" size={0}>
-                              <Text strong>{t('Instance %s', instId)}</Text>
-                              {r.status !== undefined && (
-                                <Text>{t('Status')}: {String(r.status)}</Text>
-                              )}
-                              {r.rows !== undefined && (
-                                <Text>{t('Rows')}: {String(r.rows)}</Text>
-                              )}
-                              {r.error ? (
-                                <Text type="danger">{String(r.error)}</Text>
-                              ) : null}
-                            </Space>
-                          </Card>
-                        );
-                      })}
-                    </Space>
+                    <div style={{ padding: '8px 0' }}>
+                      <Collapse
+                        defaultActiveKey={['instances', 'requests']}
+                        ghost
+                        size="small"
+                        items={[
+                          // ── Instance summary panel ──────────────────────
+                          {
+                            key: 'instances',
+                            label: (
+                              <Space>
+                                <UnorderedListOutlined />
+                                <Text strong>{t('Instance Summary')}</Text>
+                                {instEntries.length > 0 && (
+                                  <Badge count={instEntries.length} color="blue" />
+                                )}
+                              </Space>
+                            ),
+                            children: instEntries.length === 0 ? (
+                              <Text type="secondary">{t('No instance details')}</Text>
+                            ) : (
+                              <Space wrap size="small">
+                                {instEntries.map(([instId, result]) => {
+                                  const r = result as Record<string, unknown>;
+                                  const isOk = r.status === 'success';
+                                  return (
+                                    <Card
+                                      key={instId}
+                                      size="small"
+                                      style={{
+                                        minWidth: 220,
+                                        borderColor: isOk ? '#b7eb8f' : '#ffccc7',
+                                        background: isOk ? '#f6ffed' : '#fff2f0',
+                                      }}
+                                    >
+                                      <Space direction="vertical" size={2}>
+                                        <Space>
+                                          {isOk
+                                            ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                                            : <CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+                                          <Text strong style={{ fontSize: 13 }}>
+                                            {t('Instance')} {instId}
+                                          </Text>
+                                          <Tag
+                                            color={isOk ? 'success' : 'error'}
+                                            style={{ fontSize: 11 }}
+                                          >
+                                            {String(r.status)}
+                                          </Tag>
+                                        </Space>
+                                        {r.rows !== undefined && (
+                                          <Text style={{ fontSize: 12 }}>
+                                            {t('Rows loaded')}: <Text strong>{String(r.rows)}</Text>
+                                          </Text>
+                                        )}
+                                        {r.sync_mode && (
+                                          <Text type="secondary" style={{ fontSize: 11 }}>
+                                            {t('Mode')}: {String(r.sync_mode)}
+                                          </Text>
+                                        )}
+                                        {r.error && (
+                                          <Tooltip title={String(r.error)}>
+                                            <Text type="danger" ellipsis style={{ fontSize: 12, maxWidth: 260 }}>
+                                              {String(r.error)}
+                                            </Text>
+                                          </Tooltip>
+                                        )}
+                                      </Space>
+                                    </Card>
+                                  );
+                                })}
+                              </Space>
+                            ),
+                          },
+
+                          // ── Per-batch request log panel (sync only) ────
+                          ...(isSyncJob(job) ? [{
+                            key: 'requests',
+                            label: (
+                              <Space>
+                                <UnorderedListOutlined />
+                                <Text strong>{t('Analytics Request Log')}</Text>
+                                {logData?.summary && (
+                                  <Space size={4}>
+                                    <Tag color="success" style={{ fontSize: 11 }}>
+                                      {logData.summary.success_count} {t('ok')}
+                                    </Tag>
+                                    {logData.summary.failed_count > 0 && (
+                                      <Tag color="error" style={{ fontSize: 11 }}>
+                                        {logData.summary.failed_count} {t('failed')}
+                                      </Tag>
+                                    )}
+                                  </Space>
+                                )}
+                                {logData?.loading && <Spin size="small" />}
+                                <Button
+                                  size="small"
+                                  icon={<ReloadOutlined />}
+                                  loading={logData?.loading}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void fetchRequestLogs(job.id);
+                                  }}
+                                  style={{ marginLeft: 4 }}
+                                >
+                                  {t('Refresh')}
+                                </Button>
+                              </Space>
+                            ),
+                            children: (() => {
+                              if (!logData || logData.loading) {
+                                return (
+                                  <Space>
+                                    <Spin size="small" />
+                                    <Text type="secondary">{t('Loading request log…')}</Text>
+                                  </Space>
+                                );
+                              }
+                              if (logData.logs.length === 0) {
+                                return (
+                                  <Text type="secondary">
+                                    {ACTIVE_STATUSES.has(job.status)
+                                      ? t('No request logs yet — sync is starting…')
+                                      : t('No request logs recorded for this job.')}
+                                  </Text>
+                                );
+                              }
+                              const { summary } = logData;
+                              return (
+                                <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                                  {/* Summary bar */}
+                                  {summary && (
+                                    <Space wrap size="small" style={{ marginBottom: 4 }}>
+                                      <Tag bordered={false} color="blue">
+                                        {t('%s requests total', summary.total_requests)}
+                                      </Tag>
+                                      <Tag bordered={false} color="success">
+                                        {t('%s succeeded', summary.success_count)}
+                                      </Tag>
+                                      {summary.failed_count > 0 && (
+                                        <Tag bordered={false} color="error">
+                                          {t('%s failed', summary.failed_count)}
+                                        </Tag>
+                                      )}
+                                      <Tag bordered={false} color="default">
+                                        {t('%s rows fetched', summary.total_rows_fetched.toLocaleString())}
+                                      </Tag>
+                                      <Tag bordered={false} color="default">
+                                        {t('Total %s', formatDuration(summary.total_duration_ms / 1000))}
+                                      </Tag>
+                                    </Space>
+                                  )}
+                                  {/* Request log table */}
+                                  <Table<DHIS2RequestLog>
+                                    dataSource={logData.logs}
+                                    rowKey="id"
+                                    size="small"
+                                    pagination={{ pageSize: 20, showSizeChanger: false, size: 'small' }}
+                                    scroll={{ x: 900 }}
+                                    rowClassName={(r) =>
+                                      r.status === 'failed' ? 'ant-table-row-danger' : ''
+                                    }
+                                    columns={[
+                                      {
+                                        title: t('#'),
+                                        dataIndex: 'request_seq',
+                                        key: 'seq',
+                                        width: 50,
+                                        render: (v: number) => (
+                                          <Text type="secondary" style={{ fontSize: 12 }}>{v}</Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('Instance'),
+                                        dataIndex: 'instance_name',
+                                        key: 'instance',
+                                        width: 160,
+                                        render: (v: string | null) => (
+                                          <Text style={{ fontSize: 12 }}>{v || '—'}</Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('Status'),
+                                        dataIndex: 'status',
+                                        key: 'status',
+                                        width: 90,
+                                        render: (v: string) =>
+                                          v === 'success' ? (
+                                            <Tag icon={<CheckCircleOutlined />} color="success" style={{ fontSize: 11 }}>
+                                              {t('OK')}
+                                            </Tag>
+                                          ) : (
+                                            <Tag icon={<CloseCircleOutlined />} color="error" style={{ fontSize: 11 }}>
+                                              {t('Failed')}
+                                            </Tag>
+                                          ),
+                                      },
+                                      {
+                                        title: t('OU count'),
+                                        dataIndex: 'ou_count',
+                                        key: 'ou_count',
+                                        width: 80,
+                                        render: (v: number | null) => (
+                                          <Text style={{ fontSize: 12 }}>{v ?? '—'}</Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('DX count'),
+                                        dataIndex: 'dx_count',
+                                        key: 'dx_count',
+                                        width: 80,
+                                        render: (v: number | null) => (
+                                          <Text style={{ fontSize: 12 }}>{v ?? '—'}</Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('Pages'),
+                                        dataIndex: 'pages_fetched',
+                                        key: 'pages',
+                                        width: 65,
+                                        render: (v: number | null) => (
+                                          <Text style={{ fontSize: 12 }}>{v ?? '—'}</Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('Rows'),
+                                        dataIndex: 'rows_returned',
+                                        key: 'rows',
+                                        width: 80,
+                                        render: (v: number | null) => (
+                                          <Text style={{ fontSize: 12 }}>
+                                            {v !== null && v !== undefined ? v.toLocaleString() : '—'}
+                                          </Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('Duration'),
+                                        dataIndex: 'duration_ms',
+                                        key: 'duration',
+                                        width: 90,
+                                        render: (v: number | null) => (
+                                          <Text style={{ fontSize: 12 }}>
+                                            {v !== null && v !== undefined
+                                              ? v >= 1000
+                                                ? `${(v / 1000).toFixed(1)}s`
+                                                : `${v}ms`
+                                              : '—'}
+                                          </Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('HTTP'),
+                                        dataIndex: 'http_status_code',
+                                        key: 'http',
+                                        width: 65,
+                                        render: (v: number | null) =>
+                                          v ? (
+                                            <Tag
+                                              color={v < 300 ? 'success' : v < 500 ? 'warning' : 'error'}
+                                              style={{ fontSize: 11 }}
+                                            >
+                                              {v}
+                                            </Tag>
+                                          ) : (
+                                            <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+                                          ),
+                                      },
+                                      {
+                                        title: t('DHIS2 Code'),
+                                        dataIndex: 'dhis2_error_code',
+                                        key: 'error_code',
+                                        width: 100,
+                                        render: (v: string | null) =>
+                                          v ? (
+                                            <Tooltip title={t('DHIS2 server error code')}>
+                                              <Tag color="volcano" style={{ fontSize: 11, fontFamily: 'monospace' }}>
+                                                {v}
+                                              </Tag>
+                                            </Tooltip>
+                                          ) : (
+                                            <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+                                          ),
+                                      },
+                                      {
+                                        title: t('Started'),
+                                        dataIndex: 'started_at',
+                                        key: 'started_at',
+                                        width: 140,
+                                        render: (v: string | null) => (
+                                          <Text type="secondary" style={{ fontSize: 11 }}>
+                                            {formatDateTime(v)}
+                                          </Text>
+                                        ),
+                                      },
+                                      {
+                                        title: t('Error'),
+                                        dataIndex: 'error_message',
+                                        key: 'error',
+                                        ellipsis: true,
+                                        render: (v: string | null) =>
+                                          v ? (
+                                            <Tooltip title={v}>
+                                              <Text type="danger" ellipsis style={{ fontSize: 12, maxWidth: 320 }}>
+                                                {v}
+                                              </Text>
+                                            </Tooltip>
+                                          ) : (
+                                            <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+                                          ),
+                                      },
+                                    ]}
+                                  />
+                                  {/* Highlight E7144 if present */}
+                                  {logData.logs.some(l => l.dhis2_error_code === 'E7144') && (
+                                    <Alert
+                                      type="error"
+                                      showIcon
+                                      message={t('Analytics tables not built (E7144)')}
+                                      description={t(
+                                        'DHIS2 reported that analytics aggregation tables do not exist on this server. ' +
+                                        'A DHIS2 administrator must run the Analytics job under Data Administration → Analytics before data can be exported.',
+                                      )}
+                                    />
+                                  )}
+                                </Space>
+                              );
+                            })(),
+                          }] : []),
+                        ]}
+                      />
+                    </div>
                   );
                 },
                 rowExpandable: (job: DHIS2AnyJob) =>
-                  Object.keys(job.instance_results || {}).length > 0,
+                  Object.keys(job.instance_results || {}).length > 0 || isSyncJob(job),
               }}
             />
           ) : (

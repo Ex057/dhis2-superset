@@ -149,6 +149,64 @@ class DHIS2JobsApi(BaseApi):
         return self.response(200, result=results, count=len(results))
 
     # ------------------------------------------------------------------
+    # Per-batch request log
+    # ------------------------------------------------------------------
+
+    @expose("/sync/<int:job_id>/requests", methods=["GET"])
+    @protect()
+    @safe
+    @permission_name("read")
+    def get_sync_job_requests(self, job_id: int) -> Response:
+        """Return the per-batch analytics request log for a sync job.
+
+        Each row represents one analytics API batch attempt (one OU chunk ×
+        one variable batch, across all pages).  Both successful and failed
+        attempts are included.  Failed attempts followed by successful
+        sub-batches reflect the automatic retry / batch-split logic.
+
+        Query params
+        ------------
+        limit : int  (default 500, max 2000)
+        """
+        from superset.dhis2.models import DHIS2SyncJobRequest  # avoid circular
+
+        job = _load_sync_job(job_id)
+        if job is None:
+            return self.response_404()
+
+        limit = min(int(request.args.get("limit", 500)), 2000)
+
+        rows = (
+            db.session.query(DHIS2SyncJobRequest)
+            .filter(DHIS2SyncJobRequest.sync_job_id == job_id)
+            .order_by(DHIS2SyncJobRequest.request_seq)
+            .limit(limit)
+            .all()
+        )
+
+        result = [r.to_json() for r in rows]
+
+        # Compute summary stats for the UI header
+        total = len(result)
+        success_count = sum(1 for r in result if r["status"] == "success")
+        failed_count = total - success_count
+        total_rows = sum(r["rows_returned"] or 0 for r in result if r["status"] == "success")
+        total_duration_ms = sum(r["duration_ms"] or 0 for r in result)
+
+        return self.response(
+            200,
+            result=result,
+            count=total,
+            summary={
+                "total_requests": total,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "total_rows_fetched": total_rows,
+                "total_duration_ms": total_duration_ms,
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Cancel
     # ------------------------------------------------------------------
 

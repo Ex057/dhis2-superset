@@ -39,6 +39,33 @@ export interface DHIS2SyncJobInstanceResult {
   error?: string | null;
 }
 
+export interface DHIS2RequestLog {
+  id: number;
+  sync_job_id: number;
+  instance_id: number | null;
+  instance_name: string | null;
+  request_seq: number;
+  ou_count: number | null;
+  dx_count: number | null;
+  periods: string[];
+  status: 'success' | 'failed';
+  http_status_code: number | null;
+  dhis2_error_code: string | null;
+  pages_fetched: number | null;
+  rows_returned: number | null;
+  duration_ms: number | null;
+  error_message: string | null;
+  started_at: string | null;
+}
+
+export interface DHIS2RequestLogSummary {
+  total_requests: number;
+  success_count: number;
+  failed_count: number;
+  total_rows_fetched: number;
+  total_duration_ms: number;
+}
+
 export interface DHIS2SyncJob {
   id: number;
   job_category: 'sync';

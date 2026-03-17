@@ -687,6 +687,13 @@ class DHIS2SyncJob(Model):
         back_populates="dhis2_sync_job",
         foreign_keys=[generic_sync_job_id],
     )
+    request_logs: list[Any] = relationship(
+        "DHIS2SyncJobRequest",
+        back_populates="sync_job",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="DHIS2SyncJobRequest.request_seq",
+    )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -745,6 +752,125 @@ class DHIS2SyncJob(Model):
         return (
             f"<DHIS2SyncJob id={self.id} status={self.status!r} "
             f"staged_dataset_id={self.staged_dataset_id}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# DHIS2SyncJobRequest — per-batch analytics request log
+# ---------------------------------------------------------------------------
+
+
+class DHIS2SyncJobRequest(Model):
+    """Persists one log entry per analytics-API batch attempt made during a
+    :class:`DHIS2SyncJob`.
+
+    A single dataset sync may issue dozens of HTTP calls to DHIS2
+    (one per org-unit chunk × variable batch, possibly across several pages).
+    This table records the outcome of every such batch so that operators can
+    diagnose exactly which requests failed, what HTTP status / DHIS2 error
+    code was returned, how long each call took, and how many rows were
+    fetched — without inspecting raw Celery worker logs.
+
+    Both successful and failed attempts are recorded.  Retried batches
+    produce multiple rows (one for the failing attempt, one for each
+    successful sub-batch), giving a full audit trail.
+    """
+
+    __tablename__ = "dhis2_sync_job_requests"
+
+    __table_args__ = (
+        sa.Index("ix_dhis2_sync_job_requests_sync_job_id", "sync_job_id"),
+        sa.Index(
+            "ix_dhis2_sync_job_requests_job_seq",
+            "sync_job_id",
+            "request_seq",
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Primary key
+    # ------------------------------------------------------------------
+    id = sa.Column(sa.Integer, primary_key=True)
+
+    # ------------------------------------------------------------------
+    # Foreign keys
+    # ------------------------------------------------------------------
+    sync_job_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("dhis2_sync_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instance_id = sa.Column(
+        sa.Integer,
+        sa.ForeignKey("dhis2_instances.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Batch identity (denormalised for easy display without joins)
+    # ------------------------------------------------------------------
+    instance_name = sa.Column(sa.String(255), nullable=True)
+    # 1-based counter within the job — used for stable ordering in the UI
+    request_seq = sa.Column(sa.Integer, nullable=False)
+    ou_count = sa.Column(sa.Integer, nullable=True)
+    dx_count = sa.Column(sa.Integer, nullable=True)
+    # JSON array of period expressions sent in this request
+    periods_json = sa.Column(Text, nullable=True)
+
+    # ------------------------------------------------------------------
+    # Outcome
+    # ------------------------------------------------------------------
+    status = sa.Column(sa.String(20), nullable=False)        # 'success' | 'failed'
+    http_status_code = sa.Column(sa.Integer, nullable=True)  # e.g. 200, 409, 500
+    dhis2_error_code = sa.Column(sa.String(20), nullable=True)  # e.g. 'E7144'
+    pages_fetched = sa.Column(sa.Integer, nullable=True)
+    rows_returned = sa.Column(sa.Integer, nullable=True)
+    duration_ms = sa.Column(sa.Integer, nullable=True)
+    error_message = sa.Column(Text, nullable=True)
+
+    # ------------------------------------------------------------------
+    # Timing
+    # ------------------------------------------------------------------
+    started_at = sa.Column(sa.DateTime, nullable=True)
+    created_on = sa.Column(sa.DateTime, default=datetime.utcnow, nullable=True)
+
+    # ------------------------------------------------------------------
+    # Relationships
+    # ------------------------------------------------------------------
+    sync_job: DHIS2SyncJob = relationship(
+        "DHIS2SyncJob",
+        back_populates="request_logs",
+    )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def to_json(self) -> dict[str, Any]:
+        """Serialise to a plain dict suitable for JSON API responses."""
+        return {
+            "id": self.id,
+            "sync_job_id": self.sync_job_id,
+            "instance_id": self.instance_id,
+            "instance_name": self.instance_name,
+            "request_seq": self.request_seq,
+            "ou_count": self.ou_count,
+            "dx_count": self.dx_count,
+            "periods": json.loads(self.periods_json) if self.periods_json else [],
+            "status": self.status,
+            "http_status_code": self.http_status_code,
+            "dhis2_error_code": self.dhis2_error_code,
+            "pages_fetched": self.pages_fetched,
+            "rows_returned": self.rows_returned,
+            "duration_ms": self.duration_ms,
+            "error_message": self.error_message,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<DHIS2SyncJobRequest id={self.id} job={self.sync_job_id} "
+            f"seq={self.request_seq} status={self.status!r}>"
         )
 
 

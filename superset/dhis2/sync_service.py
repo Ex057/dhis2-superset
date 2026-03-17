@@ -804,11 +804,97 @@ class DHIS2SyncService:
     """
 
     def __init__(self) -> None:
-        pass
+        # Accumulates per-batch request log entries during a sync run.
+        # Each entry is a plain dict matching the DHIS2SyncJobRequest columns.
+        # Flushed to the DB (via _flush_request_logs_to_session) after each
+        # instance completes so that UI polling sees live progress.
+        self._request_log_collector: list[dict[str, Any]] = []
+        # Monotonically increasing counter to assign request_seq values
+        # across multiple flush calls within one sync run.
+        self._request_seq_offset: int = 0
 
     # ------------------------------------------------------------------
     # Public entrypoint
     # ------------------------------------------------------------------
+
+    def _append_request_log(
+        self,
+        instance: DHIS2Instance,
+        batch: list[str],
+        periods: list[str],
+        org_units: list[str],
+        *,
+        status: str,
+        pages_fetched: int,
+        rows_returned: int,
+        duration_ms: int,
+        started_at: datetime,
+        exc: Exception | None = None,
+    ) -> None:
+        """Append one entry to the in-memory request log collector.
+
+        Extracts HTTP status code and DHIS2 error code from the exception when
+        available so that the UI can display structured error diagnostics.
+        """
+        http_status: int | None = None
+        dhis2_error_code: str | None = None
+        error_message: str | None = None
+
+        if exc is not None:
+            error_message = str(exc)[:1000]
+            err_response = getattr(exc, "response", None)
+            if err_response is not None:
+                http_status = getattr(err_response, "status_code", None)
+                try:
+                    body = err_response.json()
+                    dhis2_error_code = body.get("errorCode")
+                except Exception:  # pylint: disable=broad-except
+                    pass
+            # RuntimeError wraps E7144 and similar — parse the code from msg
+            if isinstance(exc, RuntimeError) and dhis2_error_code is None:
+                import re as _re
+                m = _re.search(r"\(E\d{4}\)", str(exc))
+                if m:
+                    dhis2_error_code = m.group(0)[1:-1]  # strip parens
+
+        self._request_log_collector.append({
+            "instance_id": instance.id,
+            "instance_name": instance.name,
+            "ou_count": len(org_units),
+            "dx_count": len(batch),
+            "periods_json": json.dumps(periods),
+            "status": status,
+            "http_status_code": http_status,
+            "dhis2_error_code": dhis2_error_code,
+            "pages_fetched": pages_fetched,
+            "rows_returned": rows_returned,
+            "duration_ms": duration_ms,
+            "error_message": error_message,
+            "started_at": started_at,
+        })
+
+    def _flush_request_logs_to_session(self, job_id: int) -> None:
+        """Add all collected request log entries to the current DB session.
+
+        Assigns monotonically increasing ``request_seq`` values so that UI
+        ordering is stable.  The caller is responsible for issuing a
+        ``db.session.commit()`` to persist the records.
+        """
+        if not self._request_log_collector:
+            return
+
+        from superset.dhis2.models import DHIS2SyncJobRequest  # avoid circular
+
+        for entry in self._request_log_collector:
+            self._request_seq_offset += 1
+            req = DHIS2SyncJobRequest(
+                sync_job_id=job_id,
+                request_seq=self._request_seq_offset,
+                **entry,
+            )
+            db.session.add(req)
+
+        self._request_log_collector.clear()
 
     def _fetch_analytics_batch(
         self,
@@ -820,6 +906,9 @@ class DHIS2SyncService:
         variable_map: dict[str, DHIS2DatasetVariable],
         page_size: int,
     ) -> list[dict[str, Any]]:
+        batch_started_at = datetime.utcnow()
+        batch_start_mono = time.monotonic()
+        pages_fetched = 0
         try:
             page = 1
             all_rows: list[dict[str, Any]] = []
@@ -838,6 +927,7 @@ class DHIS2SyncService:
                     instance,
                 )
                 all_rows.extend(batch_rows)
+                pages_fetched += 1
 
                 pager = raw.get("pager", {})
                 page_count = pager.get("pageCount", 1)
@@ -846,8 +936,31 @@ class DHIS2SyncService:
                     break
                 page += 1
 
+            # Record successful batch
+            self._append_request_log(
+                instance, batch, periods, org_units,
+                status="success",
+                pages_fetched=pages_fetched,
+                rows_returned=len(all_rows),
+                duration_ms=int((time.monotonic() - batch_start_mono) * 1000),
+                started_at=batch_started_at,
+            )
             return all_rows
         except Exception as exc:  # pylint: disable=broad-except
+            duration_ms = int((time.monotonic() - batch_start_mono) * 1000)
+
+            # Record this failed attempt immediately, before any retry logic,
+            # so we get a full audit trail (failure + subsequent sub-attempts).
+            self._append_request_log(
+                instance, batch, periods, org_units,
+                status="failed",
+                pages_fetched=pages_fetched,
+                rows_returned=0,
+                duration_ms=duration_ms,
+                started_at=batch_started_at,
+                exc=exc,
+            )
+
             if _is_retryable_analytics_error(exc):
                 if page_size > _MIN_ANALYTICS_PAGE_SIZE:
                     reduced_page_size = max(_MIN_ANALYTICS_PAGE_SIZE, page_size // 2)
@@ -1335,7 +1448,8 @@ class DHIS2SyncService:
                 dataset.last_sync_status = "running"
                 dataset.last_sync_rows = total_rows
                 _sync_compat_dataset(dataset)
-                # Write interim progress to the job record so the UI can poll it.
+                # Write interim progress + request logs to the job record so
+                # the UI polling can reflect live progress.
                 if job_id is not None:
                     _interim_job: DHIS2SyncJob | None = (
                         db.session.query(DHIS2SyncJob).get(job_id)
@@ -1343,6 +1457,7 @@ class DHIS2SyncService:
                     if _interim_job is not None:
                         _interim_job.rows_loaded = total_rows
                         _interim_job.instance_results = json.dumps(instance_results)
+                    self._flush_request_logs_to_session(job_id)
                 db.session.commit()
             except Exception as exc:  # pylint: disable=broad-except
                 any_failure = True
@@ -1358,6 +1473,10 @@ class DHIS2SyncService:
                     staged_dataset_id,
                     err_msg,
                 )
+                # Flush any partial request logs accumulated before the error
+                # so that the UI shows which batches ran before the failure.
+                if job_id is not None:
+                    self._flush_request_logs_to_session(job_id)
 
         duration = time.monotonic() - started_at
 
