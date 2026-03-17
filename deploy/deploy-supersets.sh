@@ -498,33 +498,46 @@ SQL"
     log "[supersets] cleanup container /opt layout and preserve only required folders"
 
     exec_in_ct "$CT_SUP" "
-      test -f '$ENV_FILE'
-      test -f '$SUPERSET_CONFIG_FILE'
+      echo 'cleanup: checking required files'
+      test -f '$ENV_FILE'         || { echo 'ERROR: missing $ENV_FILE'; exit 2; }
+      test -f '$SUPERSET_CONFIG_FILE' || { echo 'ERROR: missing $SUPERSET_CONFIG_FILE'; exit 3; }
 
+      echo 'cleanup: stopping services'
       pkill -f '[g]unicorn.*superset' || true
       systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null || true
       pkill -f '[c]elery.*superset.tasks.celery_app' || true
       sleep 1
 
+      echo 'cleanup: making base dirs'
       mkdir -p '$SUPERSET_HOME' '$CONFIG_DIR' '$BACKUP_DIR'
 
       # Pre-clean WORK_SRC bottom-up BEFORE the broad find-delete below.
-      # node_modules trees cause "Directory not empty" on overlay FS when
+      # node_modules trees cause 'Directory not empty' on overlay FS when
       # rm -rf tries to delete them top-down; find -depth deletes leaves first.
+      echo 'cleanup: pre-clearing work/src'
       if [ -d '$WORK_SRC' ]; then
-        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' || true
+        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' 2>/dev/null || true
       fi
 
-      find /opt -mindepth 1 -maxdepth 1 ! -name 'superset' -exec rm -rf {} +
-      find '$SUPERSET_HOME' -mindepth 1 -maxdepth 1 ! -name 'config' ! -name 'backups' ! -name 'src' -exec rm -rf {} +
+      echo 'cleanup: removing non-superset items from /opt'
+      find /opt -mindepth 1 -maxdepth 1 ! -name 'superset' -exec rm -rf {} + 2>/dev/null || true
 
-      if mountpoint -q '$CT_SRC_DIR'; then
+      echo 'cleanup: removing runtime dirs from $SUPERSET_HOME'
+      find '$SUPERSET_HOME' -mindepth 1 -maxdepth 1 \
+        ! -name 'config' ! -name 'backups' ! -name 'src' \
+        -exec rm -rf {} + 2>/dev/null \
+        || { echo 'WARN: some items in $SUPERSET_HOME could not be removed'; true; }
+
+      echo 'cleanup: unmounting legacy src mount if present'
+      if mountpoint -q '$CT_SRC_DIR' 2>/dev/null; then
         umount -lf '$CT_SRC_DIR' || true
       fi
       rm -rf '$CT_SRC_DIR' 2>/dev/null || true
       rmdir '$CT_SRC_DIR' 2>/dev/null || true
 
+      echo 'cleanup: creating fresh layout dirs'
       mkdir -p '$CONFIG_DIR' '$BACKUP_DIR' '$LOG_DIR' '$WORK_DIR' '$WORK_SRC'
+      echo 'cleanup: done'
     "
   }
 
@@ -1586,9 +1599,13 @@ AP
       test -f '$SUPERSET_CONFIG_FILE'
       test -f '$ENV_FILE'
 
-      rm -rf '$WORK_DIR'
-      rm -rf '$VENV'
-      rm -rf '$LOG_DIR'
+      # Clear node_modules bottom-up before rm-ing the work tree.
+      if [ -d '$WORK_SRC' ]; then
+        find '$WORK_SRC' -depth -delete 2>/dev/null || rm -rf '$WORK_SRC' 2>/dev/null || true
+      fi
+      rm -rf '$WORK_DIR' 2>/dev/null || true
+      rm -rf '$VENV'     2>/dev/null || true
+      rm -rf '$LOG_DIR'  2>/dev/null || true
       rm -f '$GUNICORN_PID_FILE' '$CELERY_PID_FILE' '$CELERY_BEAT_PID_FILE'
       mkdir -p '$CONFIG_DIR' '$BACKUP_DIR'
 
