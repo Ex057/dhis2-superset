@@ -1411,6 +1411,7 @@ class DHIS2SyncService:
                         instance,
                         inst_vars,
                         effective_config,
+                        job_id=job_id,
                     )
                 row_count = self._load_rows(
                     dataset,
@@ -1448,8 +1449,8 @@ class DHIS2SyncService:
                 dataset.last_sync_status = "running"
                 dataset.last_sync_rows = total_rows
                 _sync_compat_dataset(dataset)
-                # Write interim progress + request logs to the job record so
-                # the UI polling can reflect live progress.
+                # Write interim progress to the job record so UI polling sees
+                # live row counts (request logs already committed per-batch).
                 if job_id is not None:
                     _interim_job: DHIS2SyncJob | None = (
                         db.session.query(DHIS2SyncJob).get(job_id)
@@ -1457,7 +1458,6 @@ class DHIS2SyncService:
                     if _interim_job is not None:
                         _interim_job.rows_loaded = total_rows
                         _interim_job.instance_results = json.dumps(instance_results)
-                    self._flush_request_logs_to_session(job_id)
                 db.session.commit()
             except Exception as exc:  # pylint: disable=broad-except
                 any_failure = True
@@ -1473,10 +1473,9 @@ class DHIS2SyncService:
                     staged_dataset_id,
                     err_msg,
                 )
-                # Flush any partial request logs accumulated before the error
-                # so that the UI shows which batches ran before the failure.
-                if job_id is not None:
-                    self._flush_request_logs_to_session(job_id)
+                # Any request logs from the failing batch were already flushed
+                # per-batch inside _fetch_from_instance._fetch_analytics_batch.
+                # Nothing extra to flush here.
 
         duration = time.monotonic() - started_at
 
@@ -1555,6 +1554,7 @@ class DHIS2SyncService:
         instance: DHIS2Instance,
         variables: list[DHIS2DatasetVariable],
         dataset_config: dict[str, Any],
+        job_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch analytics data for *variables* from *instance*.
 
@@ -1663,15 +1663,23 @@ class DHIS2SyncService:
                 batch = dx_ids[batch_start : batch_start + max_vars_per_request]
                 if not batch:
                     break
-                batch_rows = self._fetch_analytics_batch(
-                    instance=instance,
-                    batch=batch,
-                    periods=periods_cfg,
-                    org_units=ou_chunk,
-                    variable_map=variable_map,
-                    page_size=analytics_page_size,
-                )
-                all_rows.extend(batch_rows)
+                try:
+                    batch_rows = self._fetch_analytics_batch(
+                        instance=instance,
+                        batch=batch,
+                        periods=periods_cfg,
+                        org_units=ou_chunk,
+                        variable_map=variable_map,
+                        page_size=analytics_page_size,
+                    )
+                    all_rows.extend(batch_rows)
+                finally:
+                    # Flush request log immediately after every batch (success
+                    # or failure) so the UI shows live progress without waiting
+                    # for the entire instance or job to complete.
+                    if job_id is not None and self._request_log_collector:
+                        self._flush_request_logs_to_session(job_id)
+                        db.session.commit()
 
         return all_rows
 
