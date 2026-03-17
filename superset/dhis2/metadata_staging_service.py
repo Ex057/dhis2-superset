@@ -2490,31 +2490,6 @@ def schedule_database_metadata_refresh(
             exc_info=True,
         )
 
-    try:
-        from superset.utils.dhis2_preloader import get_dhis2_preloader
-
-        preloader = get_dhis2_preloader()
-        preloader.request_refresh(
-            database_id=database_id,
-            instance_ids=requested_instance_ids,
-            metadata_types=active_metadata_types,
-            reason=reason,
-        )
-        meta_job.status = "running"
-        db.session.commit()
-        return {
-            "scheduled": True,
-            "mode": "preloader",
-            "task_id": None,
-            "job_id": job_id,
-        }
-    except Exception:  # pylint: disable=broad-except
-        logger.info(
-            "Preloader metadata refresh unavailable for database id=%s",
-            database_id,
-            exc_info=True,
-        )
-
     def _run() -> None:
         try:
             result = refresh_database_metadata(

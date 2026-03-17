@@ -502,6 +502,7 @@ SQL"
       test -f '$SUPERSET_CONFIG_FILE'
 
       pkill -f '[g]unicorn.*superset' || true
+      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null || true
       pkill -f '[c]elery.*superset.tasks.celery_app' || true
       sleep 1
 
@@ -1371,10 +1372,74 @@ PY
     "
   }
 
+  # ---------------------------------------------------------------------------
+  # Write systemd unit files and (re)start via systemctl
+  # ---------------------------------------------------------------------------
+  # Both services use EnvironmentFile= to load secrets from superset.env so
+  # that credentials are never embedded in the unit files.  They run as root
+  # (matching lxc exec behaviour) and restart automatically on failure.
+  # ---------------------------------------------------------------------------
+
+  install_celery_systemd_units() {
+    log "[supersets] write systemd unit files for Celery worker + beat"
+
+    exec_in_ct "$CT_SUP" "
+      # ---- worker unit -------------------------------------------------------
+      cat > /etc/systemd/system/superset-celery-worker.service <<'UNIT'
+[Unit]
+Description=Superset Celery Worker
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$SUPERSET_HOME
+EnvironmentFile=$ENV_FILE
+Environment=PYTHONPATH=$WORK_SRC
+ExecStart=$VENV/bin/celery --app=superset.tasks.celery_app:app worker \\
+  --pool=prefork -O fair -c $CELERY_CONCURRENCY \\
+  -Q celery,dhis2
+StandardOutput=append:$CELERY_LOG
+StandardError=append:$CELERY_LOG
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+      # ---- beat unit ---------------------------------------------------------
+      cat > /etc/systemd/system/superset-celery-beat.service <<'UNIT'
+[Unit]
+Description=Superset Celery Beat
+After=network.target superset-celery-worker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$SUPERSET_HOME
+EnvironmentFile=$ENV_FILE
+Environment=PYTHONPATH=$WORK_SRC
+ExecStart=$VENV/bin/celery --app=superset.tasks.celery_app:app beat \\
+  --schedule=$SUPERSET_HOME/celerybeat-schedule
+StandardOutput=append:$CELERY_BEAT_LOG
+StandardError=append:$CELERY_BEAT_LOG
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+      systemctl daemon-reload
+      echo 'systemd_units_installed=1'
+    "
+  }
+
   restart_celery_worker() {
     [[ "$ENABLE_CELERY_WORKER" == "1" ]] || { log "[supersets] celery worker skipped"; return 0; }
 
-    log "[supersets] restart Celery worker with nohup"
+    log "[supersets] enable + start Celery worker via systemd"
 
     exec_in_ct "$CT_SUP" "
       set -a; . '$ENV_FILE'; set +a
@@ -1386,64 +1451,40 @@ PY
       touch '$CELERY_LOG'
       chmod 664 '$CELERY_LOG' || true
 
-      if [ -f '$CELERY_PID_FILE' ]; then
-        oldpid=\$(cat '$CELERY_PID_FILE' 2>/dev/null || true)
-        if [ -n \"\$oldpid\" ] && kill -0 \"\$oldpid\" 2>/dev/null; then
-          kill \"\$oldpid\" || true
-          sleep 2
-        fi
-        rm -f '$CELERY_PID_FILE'
+      # Kill any stale nohup workers from previous deploys.
+      pkill -f '[c]elery.*superset.tasks.celery_app.*worker' 2>/dev/null || true
+      rm -f '$CELERY_PID_FILE'
+
+      # Enable + (re)start the systemd service.
+      systemctl enable superset-celery-worker
+      if systemctl is-active --quiet superset-celery-worker; then
+        systemctl restart superset-celery-worker
+      else
+        systemctl start superset-celery-worker
       fi
 
-      pkill -f '[c]elery.*superset.tasks.celery_app' || true
-      sleep 2
-
-      set +e
-      PYTHONPATH='$WORK_SRC' nohup '$VENV/bin/celery' --app=superset.tasks.celery_app:app worker \
-        --pool=prefork -O fair -c '$CELERY_CONCURRENCY' \
-        -Q celery,dhis2 \
-        >> '$CELERY_LOG' 2>&1 &
-      celery_pid=\$!
-      echo \$celery_pid > '$CELERY_PID_FILE'
-      sleep 5
-
-      if ! kill -0 \$celery_pid 2>/dev/null; then
-        echo 'ERROR: celery worker exited immediately'
-        tail -n 200 '$CELERY_LOG' || true
-        exit 42
-      fi
-
-      if ! pgrep -f '[c]elery.*superset.tasks.celery_app' >/dev/null 2>&1; then
-        echo 'ERROR: celery worker process not found after start'
-        tail -n 200 '$CELERY_LOG' || true
-        exit 43
-      fi
-
-      # Wait until the Celery worker responds to status checks.  This ensures
-      # tasks will be accepted before the deployment completes.  We retry
-      # status for up to 30 seconds.  If the command returns a non-zero
-      # exit code, it means no worker is accepting tasks yet.
+      # Wait up to 30 s for the worker to answer ping.
       tries=0
       while true; do
-        PYTHONPATH='$WORK_SRC' '$VENV/bin/celery' --app=superset.tasks.celery_app:app status >/dev/null 2>&1 && break
-        tries=$((tries + 1))
-        if [ "$tries" -ge 30 ]; then
+        PYTHONPATH='$WORK_SRC' '$VENV/bin/celery' --app=superset.tasks.celery_app:app inspect ping >/dev/null 2>&1 && break
+        tries=\$((tries + 1))
+        if [ \"\$tries\" -ge 30 ]; then
           echo 'ERROR: celery worker not ready after 30 seconds'
-          tail -n 200 '$CELERY_LOG' || true
+          journalctl -u superset-celery-worker -n 50 --no-pager || tail -n 50 '$CELERY_LOG' || true
           exit 47
         fi
         sleep 1
       done
 
-      set -e
       echo 'celery_worker_ok=1'
+      systemctl status superset-celery-worker --no-pager || true
     "
   }
 
   restart_celery_beat() {
     [[ "$ENABLE_CELERY_BEAT" == "1" ]] || return 0
 
-    log "[supersets] restart Celery beat with nohup"
+    log "[supersets] enable + start Celery beat via systemd"
 
     exec_in_ct "$CT_SUP" "
       set -a; . '$ENV_FILE'; set +a
@@ -1455,55 +1496,34 @@ PY
       touch '$CELERY_BEAT_LOG'
       chmod 664 '$CELERY_BEAT_LOG' || true
 
-      if [ -f '$CELERY_BEAT_PID_FILE' ]; then
-        oldpid=\$(cat '$CELERY_BEAT_PID_FILE' 2>/dev/null || true)
-        if [ -n \"\$oldpid\" ] && kill -0 \"\$oldpid\" 2>/dev/null; then
-          kill \"\$oldpid\" || true
-          sleep 2
-        fi
-        rm -f '$CELERY_BEAT_PID_FILE'
+      # Kill any stale nohup beat processes from previous deploys.
+      pkill -f '[c]elery.*superset.tasks.celery_app.*beat' 2>/dev/null || true
+      rm -f '$CELERY_BEAT_PID_FILE'
+
+      # Enable + (re)start the systemd service.
+      systemctl enable superset-celery-beat
+      if systemctl is-active --quiet superset-celery-beat; then
+        systemctl restart superset-celery-beat
+      else
+        systemctl start superset-celery-beat
       fi
 
-      pkill -f '[c]celery.*superset.tasks.celery_app.*beat' || true
-      sleep 2
-
-      set +e
-      PYTHONPATH='$WORK_SRC' nohup '$VENV/bin/celery' --app=superset.tasks.celery_app:app beat \
-        >> '$CELERY_BEAT_LOG' 2>&1 &
-      beat_pid=\$!
-      echo \$beat_pid > '$CELERY_BEAT_PID_FILE'
-      sleep 5
-
-      if ! kill -0 \$beat_pid 2>/dev/null; then
-        echo 'ERROR: celery beat exited immediately'
-        tail -n 200 '$CELERY_BEAT_LOG' || true
-        exit 46
-      fi
-
-      # Wait until the beat process is fully running.  Since celery beat
-      # does not have a status command like workers do, we simply check
-      # that the process remains alive for up to 30 seconds.  If the
-      # process dies or fails to appear in `pgrep` output during this
-      # window, treat it as a startup failure.  This loop prevents the
-      # deployment from completing if the beat scheduler cannot start.
+      # Celery beat has no ping command — wait up to 30 s for the process
+      # to remain alive (it exits immediately if config is wrong).
       tries=0
       while true; do
-        # Use pgrep with the same pattern used by pkill to locate the beat
-        # process.  It returns 0 when a matching process is found.
-        if pgrep -f '[c]elery.*superset.tasks.celery_app.*beat' >/dev/null 2>&1; then
-          break
-        fi
-        tries=$((tries + 1))
-        if [ "$tries" -ge 30 ]; then
-          echo 'ERROR: celery beat not ready after 30 seconds'
-          tail -n 200 '$CELERY_BEAT_LOG' || true
+        systemctl is-active --quiet superset-celery-beat && break
+        tries=\$((tries + 1))
+        if [ \"\$tries\" -ge 30 ]; then
+          echo 'ERROR: celery beat not running after 30 seconds'
+          journalctl -u superset-celery-beat -n 50 --no-pager || tail -n 50 '$CELERY_BEAT_LOG' || true
           exit 48
         fi
         sleep 1
       done
 
-      set -e
       echo 'celery_beat_ok=1'
+      systemctl status superset-celery-beat --no-pager || true
     "
   }
 
@@ -1557,8 +1577,9 @@ AP
     ensure_superset_config_exists
 
     exec_in_ct "$CT_SUP" "
-      pkill -f '[g]gunicorn.*superset' || true
-      pkill -f '[c]celery.*superset.tasks.celery_app' || true
+      pkill -f '[g]unicorn.*superset' || true
+      systemctl stop superset-celery-worker superset-celery-beat 2>/dev/null || true
+      pkill -f '[c]elery.*superset.tasks.celery_app' || true
       sleep 2
 
       test -f '$SUPERSET_CONFIG_FILE'
@@ -1622,6 +1643,7 @@ AP
       patch_dhis2_migrations_in_site_packages
       run_db_upgrade_init_with_alembic_fix
       restart_gunicorn
+      install_celery_systemd_units
       restart_celery_worker
       restart_celery_beat
       apache_cache_fix
