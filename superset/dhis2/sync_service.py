@@ -76,8 +76,12 @@ _VAR_CHUNK_SIZE_MAX = 200
 _ANALYTICS_PAGE_SIZE_MIN = 100
 _ANALYTICS_PAGE_SIZE_MAX = 10000
 
-# HTTP request timeout in seconds for analytics calls.
-_REQUEST_TIMEOUT = 300
+# HTTP request timeout for analytics calls: (connect_timeout, read_timeout).
+# A tuple is used so the connect phase fails fast (30 s) and the read phase
+# allows up to 120 s for DHIS2 to begin streaming rows.  A single integer
+# would restart on every TCP chunk, making it effectively unbounded for slow
+# servers that trickle data.
+_REQUEST_TIMEOUT = (30, 120)
 _ORG_UNIT_SOURCE_MODE_PRIMARY = "primary"
 _ORG_UNIT_SOURCE_MODE_REPOSITORY = "repository"
 _ORG_UNIT_SOURCE_MODE_PER_INSTANCE = "per_instance"
@@ -1677,9 +1681,25 @@ class DHIS2SyncService:
                     # Flush request log immediately after every batch (success
                     # or failure) so the UI shows live progress without waiting
                     # for the entire instance or job to complete.
+                    # Wrap in try/except so a DB error here never suppresses
+                    # the original batch exception.
                     if job_id is not None and self._request_log_collector:
-                        self._flush_request_logs_to_session(job_id)
-                        db.session.commit()
+                        try:
+                            self._flush_request_logs_to_session(job_id)
+                            db.session.commit()
+                        except Exception:  # pylint: disable=broad-except
+                            logger.warning(
+                                "Sync: failed to flush request logs after batch "
+                                "(instance '%s'); discarding %d pending entries",
+                                instance.name,
+                                len(self._request_log_collector),
+                                exc_info=True,
+                            )
+                            self._request_log_collector.clear()
+                            try:
+                                db.session.rollback()
+                            except Exception:  # pylint: disable=broad-except
+                                pass
 
         return all_rows
 

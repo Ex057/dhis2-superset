@@ -39,10 +39,18 @@ from datetime import datetime
 from typing import Any
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 
 from superset.extensions import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Maximum wall-clock time a single dataset sync task may run.
+# A large dataset against a slow DHIS2 server can legitimately take 30–60
+# minutes.  The soft limit gives the task a chance to mark the job "failed"
+# cleanly; the hard limit kills the process if it ignores the soft signal.
+_TASK_SOFT_TIME_LIMIT = 7200   # 2 hours — soft: raises SoftTimeLimitExceeded
+_TASK_HARD_TIME_LIMIT = 7260   # 2 h 1 min — hard: SIGKILL
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +61,10 @@ logger = logging.getLogger(__name__)
 @celery_app.task(
     name="superset.tasks.dhis2_sync.sync_staged_dataset",
     bind=True,
-    max_retries=3,
-    default_retry_delay=60,
+    max_retries=2,
+    default_retry_delay=120,
+    soft_time_limit=_TASK_SOFT_TIME_LIMIT,
+    time_limit=_TASK_HARD_TIME_LIMIT,
 )
 def sync_staged_dataset_task(
     self,
@@ -85,13 +95,12 @@ def sync_staged_dataset_task(
         The sync result dict produced by
         :meth:`~superset.dhis2.sync_service.DHIS2SyncService.sync_staged_dataset`.
     """
+    from superset import db
+    from superset.dhis2.models import DHIS2SyncJob
     from superset.dhis2.sync_service import DHIS2SyncService
 
     service = DHIS2SyncService()
     if job_id is not None:
-        from superset import db
-        from superset.dhis2.models import DHIS2SyncJob
-
         job = db.session.get(DHIS2SyncJob, job_id)
         if job is None:
             job = service.create_sync_job(staged_dataset_id, job_type=job_type)
@@ -99,12 +108,16 @@ def sync_staged_dataset_task(
         job = service.create_sync_job(staged_dataset_id, job_type=job_type)
 
     logger.info(
-        "dhis2_sync: starting job id=%d dataset=%d type=%s",
+        "dhis2_sync: starting job id=%d dataset=%d type=%s celery_task=%s",
         job.id,
         staged_dataset_id,
         job_type,
+        self.request.id,
     )
 
+    # Store the Celery task ID on the job so the UI Cancel button can revoke
+    # it and the stale-job detector can identify the Celery task.
+    job.task_id = self.request.id
     service.update_job_status(job, status="running")
 
     try:
@@ -113,9 +126,6 @@ def sync_staged_dataset_task(
             job_id=job.id,
             incremental=incremental,
         )
-        # update_job_status is also called inside sync_staged_dataset when
-        # job_id is provided, so this call is a safety net for the terminal
-        # state to ensure duration / rows are always written.
         logger.info(
             "dhis2_sync: completed job id=%d status=%s rows=%d",
             job.id,
@@ -123,6 +133,18 @@ def sync_staged_dataset_task(
             result.get("total_rows", 0),
         )
         return result
+
+    except SoftTimeLimitExceeded:
+        # Celery sent SIGALRM because the task exceeded _TASK_SOFT_TIME_LIMIT.
+        # Mark the job failed before the hard kill fires.
+        err_msg = (
+            f"Sync job exceeded the {_TASK_SOFT_TIME_LIMIT // 60}-minute time limit "
+            "and was automatically stopped. Consider reducing the dataset's org-unit "
+            "scope or syncing fewer periods at a time."
+        )
+        logger.warning("dhis2_sync: soft time limit exceeded for job id=%d", job.id)
+        service.update_job_status(job, status="failed", error_message=err_msg)
+        raise
 
     except requests.RequestException as exc:
         # Transient network failure – retry up to max_retries times.
