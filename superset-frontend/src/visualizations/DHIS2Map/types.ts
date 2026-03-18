@@ -61,9 +61,20 @@ export type AggregationMethod =
   | 'latest';
 export type MapCornerPosition =
   | 'topleft'
+  | 'top'
   | 'topright'
+  | 'left'
+  | 'right'
   | 'bottomleft'
+  | 'bottom'
   | 'bottomright';
+
+export type LegendDisplayType =
+  | 'vertical_list'
+  | 'horizontal_chips'
+  | 'compact';
+
+export type CompassStyle = 'north_badge' | 'arrow_north' | 'minimal_n';
 export type LegendType =
   | 'auto'
   | 'equal_interval'
@@ -138,6 +149,7 @@ export interface DHIS2MapProps {
   labelFontSize: number;
   showLegend: boolean;
   legendPosition: MapCornerPosition;
+  legendDisplayType?: LegendDisplayType;
   legendClasses: number;
   legendType?: LegendType;
   legendMin?: number;
@@ -165,6 +177,10 @@ export interface DHIS2MapProps {
   datasourceColumns?: DHIS2DatasourceColumn[];
   // Boundary loading method: 'geoFeatures' (default) or 'geoJSON'
   boundaryLoadMethod?: 'geoFeatures' | 'geoJSON';
+  // Compass
+  compassVisible?: boolean;
+  compassPosition?: MapCornerPosition;
+  compassStyle?: CompassStyle;
 }
 
 export interface ThematicLayerConfig {

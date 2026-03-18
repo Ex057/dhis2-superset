@@ -484,6 +484,15 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     formDataAny?.legendReverseColors ?? formDataAny?.legend_reverse_colors;
   const legend_no_data_color =
     formDataAny?.legendNoDataColor || formDataAny?.legend_no_data_color;
+  const legend_display_type =
+    formDataAny?.legendDisplayType || formDataAny?.legend_display_type;
+  // Compass
+  const compass_visible =
+    formDataAny?.compassVisible ?? formDataAny?.compass_visible;
+  const compass_position =
+    formDataAny?.compassPosition || formDataAny?.compass_position;
+  const compass_style =
+    formDataAny?.compassStyle || formDataAny?.compass_style;
   // Custom level colors - check both camelCase and snake_case
   const level_1_color = formDataAny?.level1Color || formDataAny?.level_1_color;
   const level_2_color = formDataAny?.level2Color || formDataAny?.level_2_color;
@@ -936,6 +945,7 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     labelFontSize: label_font_size || 12,
     showLegend: show_legend !== false,
     legendPosition: legend_position || 'bottomright',
+    legendDisplayType: legend_display_type || 'vertical_list',
     legendClasses: legend_classes || 5,
     legendType: legend_type || 'auto',
     legendMin: legend_min ? Number(legend_min) : undefined,
@@ -945,6 +955,9 @@ export default function transformProps(chartProps: ChartProps): DHIS2MapProps {
     stagedLegendDefinition,
     legendReverseColors: legend_reverse_colors ?? false,
     legendNoDataColor: legend_no_data_color || { r: 204, g: 204, b: 204, a: 1 },
+    compassVisible: compass_visible === true,
+    compassPosition: compass_position || 'topright',
+    compassStyle: compass_style || 'north_badge',
     tooltipColumns: sanitizedTooltipColumns,
     setDataMask: hooks?.setDataMask,
     activeFilters,

@@ -35,12 +35,14 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   AggregationMethod,
+  CompassStyle,
   DHIS2DatasourceColumn,
   DHIS2LegendDefinition,
   DHIS2MapProps,
   BoundaryFeature,
   DHIS2LoaderColumnDefinition,
   DrillState,
+  LegendDisplayType,
 } from './types';
 import { DHIS2DataLoader } from './dhis2DataLoader';
 import {
@@ -57,6 +59,7 @@ import {
   resolveFocusedDataLevel,
 } from './focusMode';
 import LegendPanel from './components/LegendPanel';
+import MapCompass from './components/MapCompass';
 import DrillControls from './components/DrillControls';
 import DataPreviewPanel from './components/DataPreviewPanel';
 import {
@@ -205,23 +208,12 @@ const MapFooterBar = styled.div`
   flex: 0 0 auto;
   width: 100%;
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 2px 4px 1px;
-  min-height: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(248, 250, 252, 0.92) 0%,
-    rgba(248, 250, 252, 0.74) 100%
-  );
-  border-top: 1px solid rgba(148, 163, 184, 0.18);
-`;
-
-const MapFooterLegendSlot = styled.div`
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
   align-items: center;
+  justify-content: flex-end;
+  padding: 1px 4px;
+  min-height: 0;
+  background: rgba(248, 250, 252, 0.85);
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
 `;
 
 const MapFooterControlSlot = styled.div`
@@ -239,8 +231,6 @@ interface MapAutoFocusProps {
   enabled: boolean;
   viewportWidth: number;
   viewportHeight: number;
-  legendPosition?: 'topleft' | 'topright' | 'bottomleft' | 'bottomright';
-  reserveLegendSpace?: boolean;
 }
 
 function MapAutoFocus({
@@ -248,8 +238,6 @@ function MapAutoFocus({
   enabled,
   viewportWidth,
   viewportHeight,
-  legendPosition,
-  reserveLegendSpace = false,
 }: MapAutoFocusProps): ReactElement | null {
   const map = useMap();
   // Use refs to track state without causing re-renders
@@ -305,13 +293,12 @@ function MapAutoFocus({
 
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
+          // Use actual Leaflet canvas size; legend is now an overlay so no
+          // extra padding reservation needed for it.
           const fitConfig = getMapFitViewportConfig(
-            Math.max(size.x, viewportWidth),
-            Math.max(size.y, viewportHeight),
-            {
-              legendPosition,
-              reserveLegendSpace,
-            },
+            size.x || viewportWidth,
+            size.y || viewportHeight,
+            {},
           );
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
@@ -459,15 +446,9 @@ function BoundaryMask({
 // Component for manual focus button
 interface FocusButtonProps {
   boundaries: BoundaryFeature[];
-  legendPosition?: 'topleft' | 'topright' | 'bottomleft' | 'bottomright';
-  reserveLegendSpace?: boolean;
 }
 
-function FocusButton({
-  boundaries,
-  legendPosition,
-  reserveLegendSpace = false,
-}: FocusButtonProps): ReactElement | null {
+function FocusButton({ boundaries }: FocusButtonProps): ReactElement | null {
   const map = useMap();
 
   const handleFocus = () => {
@@ -477,10 +458,7 @@ function FocusButton({
         const bounds = calculateBounds(boundaries);
         if (bounds && bounds.isValid()) {
           const size = map.getSize();
-          const fitConfig = getMapFitViewportConfig(size.x, size.y, {
-            legendPosition,
-            reserveLegendSpace,
-          });
+          const fitConfig = getMapFitViewportConfig(size.x, size.y, {});
           map.fitBounds(bounds, {
             paddingTopLeft: fitConfig.paddingTopLeft,
             paddingBottomRight: fitConfig.paddingBottomRight,
@@ -823,6 +801,7 @@ function DHIS2Map({
   labelFontSize,
   showLegend,
   legendPosition,
+  legendDisplayType = 'vertical_list',
   legendClasses,
   legendType = 'auto',
   legendMin,
@@ -832,6 +811,9 @@ function DHIS2Map({
   stagedLegendDefinition,
   legendReverseColors = false,
   legendNoDataColor = { r: 204, g: 204, b: 204, a: 1 },
+  compassVisible = false,
+  compassPosition = 'topright',
+  compassStyle = 'north_badge',
   tooltipColumns,
   onDrillDown,
   setDataMask,
@@ -2946,30 +2928,37 @@ function DHIS2Map({
           </div>
         </div>
       )}
+
+      {/* Legend overlay — floats over the map */}
+      {showLegend && (
+        <LegendPanel
+          colorScale={colorScale}
+          valueRange={valueRange}
+          position={(legendPosition as any) || 'bottomright'}
+          displayType={(legendDisplayType as LegendDisplayType) || 'vertical_list'}
+          classes={legendClasses}
+          metricName={metricDisplayName}
+          noDataColor={legendNoDataColor}
+          levelBorderColors={levelBorderColors}
+          levelLabels={boundaryLevelLabels}
+          showBoundaryLegend={boundaryLevels && boundaryLevels.length > 1}
+          manualBreaks={manualBreaks}
+          manualColors={manualColors}
+          stagedLegendDefinition={effectiveStagedLegendDefinition}
+          legendEntries={computedLegendEntries}
+        />
+      )}
+
+      {/* Compass overlay */}
+      {compassVisible && (
+        <MapCompass
+          position={(compassPosition as any) || 'topright'}
+          style={(compassStyle as CompassStyle) || 'north_badge'}
+        />
+      )}
       </MapCanvas>
 
       <MapFooterBar>
-        <MapFooterLegendSlot>
-          {showLegend && (
-            /* @ts-ignore - React 19 compatibility */
-          <LegendPanel
-              colorScale={colorScale}
-              valueRange={valueRange}
-              position={legendPosition || 'bottomright'}
-              classes={legendClasses}
-              metricName={metricDisplayName}
-              noDataColor={legendNoDataColor}
-              levelBorderColors={levelBorderColors}
-              levelLabels={boundaryLevelLabels}
-              showBoundaryLegend={boundaryLevels && boundaryLevels.length > 1}
-              manualBreaks={manualBreaks}
-              manualColors={manualColors}
-              stagedLegendDefinition={effectiveStagedLegendDefinition}
-              legendEntries={computedLegendEntries}
-            />
-          )}
-        </MapFooterLegendSlot>
-
         <MapFooterControlSlot>
           {/* @ts-ignore - React 19 compatibility */}
           <BaseMapSelector currentMap={baseMapType} onMapChange={setBaseMapType} />

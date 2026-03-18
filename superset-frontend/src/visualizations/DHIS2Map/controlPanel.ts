@@ -852,9 +852,29 @@ const config: ControlPanelConfig = {
               default: 'bottomright',
               choices: [
                 ['topleft', t('Top Left')],
+                ['top', t('Top Center')],
                 ['topright', t('Top Right')],
+                ['left', t('Left')],
+                ['right', t('Right')],
                 ['bottomleft', t('Bottom Left')],
+                ['bottom', t('Bottom Center')],
                 ['bottomright', t('Bottom Right')],
+              ],
+            },
+          },
+        ],
+        [
+          {
+            name: 'legend_display_type',
+            config: {
+              type: 'SelectControl',
+              label: t('Legend Display'),
+              default: 'vertical_list',
+              renderTrigger: true,
+              choices: [
+                ['vertical_list', t('Vertical List')],
+                ['horizontal_chips', t('Horizontal Chips')],
+                ['compact', t('Compact')],
               ],
             },
           },
@@ -1007,6 +1027,60 @@ const config: ControlPanelConfig = {
               description: t('Color for areas with no data'),
               default: { r: 204, g: 204, b: 204, a: 1 },
               renderTrigger: true,
+            },
+          },
+        ],
+      ],
+    },
+    {
+      label: t('Compass'),
+      expanded: false,
+      controlSetRows: [
+        [
+          {
+            name: 'compass_visible',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Show Compass'),
+              default: false,
+              renderTrigger: true,
+            },
+          },
+        ],
+        [
+          {
+            name: 'compass_position',
+            config: {
+              type: 'SelectControl',
+              label: t('Compass Position'),
+              default: 'topright',
+              renderTrigger: true,
+              choices: [
+                ['topleft', t('Top Left')],
+                ['topright', t('Top Right')],
+                ['bottomleft', t('Bottom Left')],
+                ['bottomright', t('Bottom Right')],
+              ],
+              visibility: ({ controls }: any) =>
+                controls?.compass_visible?.value === true,
+            },
+          },
+        ],
+        [
+          {
+            name: 'compass_style',
+            config: {
+              type: 'SelectControl',
+              label: t('Compass Style'),
+              default: 'north_badge',
+              renderTrigger: true,
+              choices: [
+                ['north_badge', t('North Badge (N▲)')],
+                ['arrow_north', t('Arrow + N')],
+                ['minimal_n', t('Minimal N')],
+              ],
+              visibility: ({ controls }: any) =>
+                controls?.compass_visible?.value === true,
             },
           },
         ],
