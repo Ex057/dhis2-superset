@@ -960,7 +960,6 @@ export async function loadDHIS2GeoFeatures(
     allFeatures.length > (options.chunkSize || 1000)
   ) {
     const chunkSize = options.chunkSize || 1000;
-    const _totalChunks = Math.ceil(allFeatures.length / chunkSize);
 
     // Process chunks progressively
     for (let i = 0; i < allFeatures.length; i += chunkSize) {
