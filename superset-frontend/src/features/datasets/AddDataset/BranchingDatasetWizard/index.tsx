@@ -56,6 +56,9 @@ import WizardStepOrgUnits from '../DHIS2DatasetWizard/steps/StepOrgUnits';
 import WizardStepSchedule, {
   type ScheduleConfig,
 } from '../DHIS2DatasetWizard/steps/StepSchedule';
+import type {
+  LevelMappingConfig,
+} from '../DHIS2DatasetWizard/index';
 import buildStagedDhIS2DatasetPayload from '../buildStagedDhIS2DatasetPayload';
 import refreshDatasetMetadata from '../refreshDatasetMetadata';
 
@@ -141,10 +144,13 @@ interface WorkflowState {
   primaryOrgUnitInstanceId: number | null;
   selectedVariables: VariableMapping[];
   periods: string[];
+  periodsAutoDetect: boolean;
   orgUnits: string[];
+  orgUnitsAutoDetect: boolean;
   selectedOrgUnitDetails: SelectedOrgUnitDetail[];
   includeChildren: boolean;
   dataLevelScope: DataLevelScope;
+  levelMapping?: LevelMappingConfig;
   datasetSettings: {
     name: string;
     description: string;
@@ -289,10 +295,13 @@ export const initialWorkflowState: WorkflowState = {
   primaryOrgUnitInstanceId: null,
   selectedVariables: [],
   periods: [],
+  periodsAutoDetect: false,
   orgUnits: [],
+  orgUnitsAutoDetect: false,
   selectedOrgUnitDetails: [],
   includeChildren: false,
   dataLevelScope: 'selected',
+  levelMapping: undefined,
   datasetSettings: {
     name: '',
     description: '',
@@ -359,10 +368,13 @@ export function workflowReducer(
         primaryOrgUnitInstanceId: null,
         selectedVariables: [],
         periods: [],
+        periodsAutoDetect: false,
         orgUnits: [],
+        orgUnitsAutoDetect: false,
         selectedOrgUnitDetails: [],
         includeChildren: false,
         dataLevelScope: 'selected',
+        levelMapping: undefined,
         datasetSettings: {
           ...state.datasetSettings,
           name: '',
@@ -479,8 +491,14 @@ export function workflowReducer(
           state.selectedVariables,
         periods:
           (action.payload.periods as string[] | undefined) ?? state.periods,
+        periodsAutoDetect:
+          (action.payload.periodsAutoDetect as boolean | undefined) ??
+          state.periodsAutoDetect,
         orgUnits:
           (action.payload.orgUnits as string[] | undefined) ?? state.orgUnits,
+        orgUnitsAutoDetect:
+          (action.payload.orgUnitsAutoDetect as boolean | undefined) ??
+          state.orgUnitsAutoDetect,
         selectedOrgUnitDetails:
           (action.payload.selectedOrgUnitDetails as SelectedOrgUnitDetail[] | undefined) ??
           state.selectedOrgUnitDetails,
@@ -496,6 +514,10 @@ export function workflowReducer(
         primaryOrgUnitInstanceId:
           (action.payload.primaryOrgUnitInstanceId as number | null | undefined) ??
           state.primaryOrgUnitInstanceId,
+        levelMapping:
+          action.payload.levelMapping !== undefined
+            ? (action.payload.levelMapping as LevelMappingConfig | undefined)
+            : state.levelMapping,
       };
     case 'PATCH_DATASET_SETTINGS':
       return {
@@ -729,6 +751,7 @@ function useAvailableDatabases() {
         order_direction: 'asc',
         page: 0,
         page_size: 500,
+        columns: ['id', 'database_name', 'backend', 'allow_multi_catalog', 'extra'],
       })}`;
       const response = await SupersetClient.get({ endpoint });
       if (requestId !== requestIdRef.current) {
@@ -737,12 +760,23 @@ function useAvailableDatabases() {
 
       const nextDatabases = (
         (response.json as { result?: DatabaseObject[] })?.result || []
-      ).map(database => ({
-        id: database.id,
-        database_name: database.database_name,
-        backend: database.backend,
-        allow_multi_catalog: database.allow_multi_catalog,
-      }));
+      )
+        .filter(database => {
+          // Hide internal staging/serving databases (ClickHouse serving,
+          // DuckDB staging, etc.) — users should not pick these as a dataset
+          // source. They are marked via extra.dhis2_staging_internal.
+          try {
+            const ex = JSON.parse((database as any).extra || '{}');
+            if (ex.dhis2_staging_internal === true) return false;
+          } catch { /* malformed extra — include the db */ }
+          return true;
+        })
+        .map(database => ({
+          id: database.id,
+          database_name: database.database_name,
+          backend: database.backend,
+          allow_multi_catalog: database.allow_multi_catalog,
+        }));
       if (!isMountedRef.current || requestId !== requestIdRef.current) {
         return;
       }
@@ -1307,7 +1341,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
           payload: {
             selectedVariables,
             periods: Array.isArray(cfg.periods) ? cfg.periods : [],
+            periodsAutoDetect: cfg.periods_auto_detect === true,
             orgUnits: Array.isArray(cfg.org_units) ? cfg.org_units : [],
+            orgUnitsAutoDetect: cfg.org_units_auto_detect === true,
             selectedOrgUnitDetails: Array.isArray(cfg.org_unit_details)
               ? cfg.org_unit_details
               : [],
@@ -1317,6 +1353,10 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
               typeof cfg.primary_org_unit_instance_id === 'number'
                 ? cfg.primary_org_unit_instance_id
                 : null,
+            levelMapping:
+              cfg.level_mapping && typeof cfg.level_mapping === 'object'
+                ? (cfg.level_mapping as LevelMappingConfig)
+                : undefined,
           },
         });
 
@@ -1787,6 +1827,15 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     if (updates.primaryOrgUnitInstanceId !== undefined) {
       nextPayload.primaryOrgUnitInstanceId = updates.primaryOrgUnitInstanceId;
     }
+    if (updates.periodsAutoDetect !== undefined) {
+      nextPayload.periodsAutoDetect = updates.periodsAutoDetect;
+    }
+    if (updates.orgUnitsAutoDetect !== undefined) {
+      nextPayload.orgUnitsAutoDetect = updates.orgUnitsAutoDetect;
+    }
+    if (updates.levelMapping !== undefined) {
+      nextPayload.levelMapping = updates.levelMapping;
+    }
       const normalizedMode =
         updates.orgUnitSourceMode === 'federated'
           ? 'repository'
@@ -1809,10 +1858,13 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       variableMappings: state.selectedVariables,
       dataElements: state.selectedVariables.map(variable => variable.variableId),
       periods: state.periods,
+      periodsAutoDetect: state.periodsAutoDetect,
       orgUnits: state.orgUnits,
+      orgUnitsAutoDetect: state.orgUnitsAutoDetect,
       selectedOrgUnitDetails: state.selectedOrgUnitDetails,
       includeChildren: state.includeChildren,
       dataLevelScope: state.dataLevelScope,
+      levelMapping: state.levelMapping,
       columns: [],
       previewData: [],
       scheduleConfig: state.scheduleConfig,
@@ -1883,7 +1935,10 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
     if (Array.isArray(columns) && columns.length > 0) {
       try {
         await SupersetClient.put({
-          endpoint: `/api/v1/dataset/${result.id}`,
+          // override_columns=true skips the uniqueness check so that
+          // columns can be (re-)applied even if the dataset was previously
+          // seeded by the staged-dataset pipeline.
+          endpoint: `/api/v1/dataset/${result.id}?override_columns=true`,
           jsonPayload: {
             columns,
           },
@@ -1922,7 +1977,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       dataset_config: {
         configured_connection_ids: state.selectedInstanceIds,
         periods: state.periods,
+        periods_auto_detect: state.periodsAutoDetect,
         org_units: state.orgUnits,
+        org_units_auto_detect: state.orgUnitsAutoDetect,
         org_unit_details: state.selectedOrgUnitDetails,
         org_unit_scope: state.dataLevelScope,
         org_unit_source_mode:
@@ -1933,6 +1990,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
           state.orgUnitSourceMode === 'primary'
             ? state.primaryOrgUnitInstanceId
             : null,
+        level_mapping: state.levelMapping ?? null,
       },
       variables:
         state.selectedVariables.length > 0
@@ -2043,7 +2101,9 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
       dataset_config: {
         configured_connection_ids: state.selectedInstanceIds,
         periods: state.periods,
+        periods_auto_detect: state.periodsAutoDetect,
         org_units: state.orgUnits,
+        org_units_auto_detect: state.orgUnitsAutoDetect,
         org_unit_details: state.selectedOrgUnitDetails,
         org_unit_scope: state.dataLevelScope,
         org_unit_source_mode:
@@ -2054,6 +2114,7 @@ export default function BranchingDatasetWizard({ editDatasetId }: BranchingDatas
           state.orgUnitSourceMode === 'primary'
             ? state.primaryOrgUnitInstanceId
             : null,
+        level_mapping: state.levelMapping ?? null,
       },
       variables:
         state.selectedVariables.length > 0

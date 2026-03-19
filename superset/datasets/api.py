@@ -361,7 +361,14 @@ class DatasetRestApi(BaseSupersetModelRestApi):
 
         try:
             new_model = CreateDatasetCommand(item).run()
-            return self.response(201, id=new_model.id, result=item, data=new_model.data)
+            # Evaluate new_model.data inside the try block so that any DB
+            # connection error raised by select_star is caught rather than
+            # falling through @safe as a 500.
+            try:
+                model_data = new_model.data
+            except Exception:  # pylint: disable=broad-except
+                model_data = None
+            return self.response(201, id=new_model.id, result=item, data=model_data)
         except DatasetInvalidError as ex:
             return self.response_422(message=ex.normalized_messages())
         except DatasetCreateFailedError as ex:

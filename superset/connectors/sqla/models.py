@@ -1220,7 +1220,7 @@ class SqlaTable(
 
         extra = self.extra_dict
         serving_database_id = extra.get("dhis2_serving_database_id")
-        if isinstance(serving_database_id, int) and serving_database_id != self.database_id:
+        if isinstance(serving_database_id, int):
             serving_database = db.session.get(Database, serving_database_id)
             if serving_database is not None:
                 return serving_database

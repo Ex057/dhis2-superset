@@ -18,6 +18,16 @@ set -euo pipefail
 #   - /opt/superset/config/superset_config.py   (unless forced config sync)
 #   - /opt/superset/backups
 # ==============================================================================
+#
+# Default staging engine: ClickHouse (installed and configured automatically)
+#   - Installs clickhouse-server, creates dhis2_user, and bootstraps databases
+#   - Installs clickhouse-connect Python package into the venv
+#   - Syncs credentials into Superset's local_staging_settings automatically
+#   - Can be disabled with: --no-clickhouse
+#
+# DuckDB support (opt-in):
+#   - Enable with: --duckdb  or  DUCKDB_ENABLED=1
+# ==============================================================================
 
 TARGET="${TARGET:-socaya@209.145.54.74}"
 SSH_PORT="${SSH_PORT:-22}"
@@ -76,6 +86,24 @@ APACHE_CACHE_FIX="${APACHE_CACHE_FIX:-1}"
 ENABLE_CELERY_WORKER="${ENABLE_CELERY_WORKER:-1}"
 ENABLE_CELERY_BEAT="${ENABLE_CELERY_BEAT:-1}"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-4}"
+
+DUCKDB_ENABLED="${DUCKDB_ENABLED:-0}"          # opt-in: use --duckdb flag or DUCKDB_ENABLED=1
+DUCKDB_PYTHON_PACKAGE="${DUCKDB_PYTHON_PACKAGE:-duckdb}"
+DUCKDB_SQLALCHEMY_PACKAGE="${DUCKDB_SQLALCHEMY_PACKAGE:-duckdb-engine}"
+
+# ClickHouse is the default staging engine — enabled by default
+CLICKHOUSE_ENABLED="${CLICKHOUSE_ENABLED:-1}"
+CLICKHOUSE_PYTHON_PACKAGE="${CLICKHOUSE_PYTHON_PACKAGE:-clickhouse-connect}"
+CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-127.0.0.1}"
+CLICKHOUSE_HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
+CLICKHOUSE_NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
+CLICKHOUSE_STAGING_DATABASE="${CLICKHOUSE_STAGING_DATABASE:-dhis2_staging}"
+CLICKHOUSE_SERVING_DATABASE="${CLICKHOUSE_SERVING_DATABASE:-dhis2_serving}"
+CLICKHOUSE_CONTROL_DATABASE="${CLICKHOUSE_CONTROL_DATABASE:-dhis2_control}"
+CLICKHOUSE_USER="${CLICKHOUSE_USER:-dhis2_user}"
+# CLICKHOUSE_PASSWORD must be set externally or in the environment for security
+CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-change_me_securely}"
+CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME:-DHIS2 Serving (ClickHouse)}"
 
 WIPE_METADATA="${WIPE_METADATA:-0}"
 CONFIRM_WIPE_METADATA="${CONFIRM_WIPE_METADATA:-0}"
@@ -144,6 +172,15 @@ OPTIONS:
   --no-celery-worker
   --celery-beat
   --celery-concurrency <N>
+
+  --no-clickhouse              Disable ClickHouse install (default: enabled)
+  --clickhouse-password <pw>   Override CLICKHOUSE_PASSWORD
+  --clickhouse-user <user>     Override CLICKHOUSE_USER (default: dhis2_user)
+  --clickhouse-host <host>     Override CLICKHOUSE_HOST (default: 127.0.0.1)
+  --clickhouse-http-port <N>   Override CLICKHOUSE_HTTP_PORT (default: 8123)
+
+  --duckdb                     Enable DuckDB install (default: disabled)
+  --no-duckdb                  Disable DuckDB install (already off by default)
 EOF
 }
 
@@ -183,6 +220,11 @@ write_remote_env_file() {
     FRONTEND FRONTEND_CLEAN NPM_LEGACY_PEER_DEPS NODE_OPTIONS_VALUE FRONTEND_TIMEOUT_MINUTES
     DB_SYNC PATCH_MIGRATIONS APACHE_CACHE_FIX
     ENABLE_CELERY_WORKER ENABLE_CELERY_BEAT CELERY_CONCURRENCY
+    DUCKDB_ENABLED DUCKDB_PYTHON_PACKAGE DUCKDB_SQLALCHEMY_PACKAGE
+    CLICKHOUSE_ENABLED CLICKHOUSE_PYTHON_PACKAGE
+    CLICKHOUSE_HOST CLICKHOUSE_HTTP_PORT CLICKHOUSE_NATIVE_PORT
+    CLICKHOUSE_STAGING_DATABASE CLICKHOUSE_SERVING_DATABASE CLICKHOUSE_CONTROL_DATABASE
+    CLICKHOUSE_USER CLICKHOUSE_PASSWORD CLICKHOUSE_SUPERSET_DB_NAME
     WIPE_METADATA CONFIRM_WIPE_METADATA DO_BACKUP
     CONFIG_SYNC FORCE_CONFIG_SYNC CONFIG_CANDIDATE_PATH
     ALEMBIC_FIX_MODE ALEMBIC_AUTO_FALLBACK
@@ -254,6 +296,302 @@ EOS
 
   ensure_env_exists() {
     exec_in_ct "$CT_SUP" "test -f '$ENV_FILE' || { echo 'ERROR: missing $ENV_FILE'; exit 2; }"
+  }
+
+  # ---------------------------------------------------------------------------
+  # DuckDB .env variable management
+  # Idempotently writes required DHIS2_DUCKDB_* variables into ENV_FILE.
+  # Only adds variables that are not already present — never overwrites existing
+  # values so that admin-customised paths are preserved on re-deployment.
+  # Also ensures the DuckDB data directory exists with correct ownership.
+  # ---------------------------------------------------------------------------
+
+  ensure_duckdb_env_vars() {
+    [[ "${DUCKDB_ENABLED:-0}" == "1" ]] || return 0
+    log "[supersets] ensure DuckDB env vars in $ENV_FILE"
+
+    exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+
+      ENV_FILE='$ENV_FILE'
+      DUCKDB_DATA_DIR=\${DHIS2_DUCKDB_DIR:-/var/lib/superset}
+      DUCKDB_DB_PATH=\${DHIS2_DUCKDB_PATH:-\$DUCKDB_DATA_DIR/dhis2_staging.duckdb}
+
+      # Create DuckDB data directory if missing
+      if [ ! -d \"\$DUCKDB_DATA_DIR\" ]; then
+        mkdir -p \"\$DUCKDB_DATA_DIR\"
+        chown www-data:www-data \"\$DUCKDB_DATA_DIR\" 2>/dev/null || true
+        chmod 750 \"\$DUCKDB_DATA_DIR\" 2>/dev/null || true
+        echo \"[duckdb] created data directory \$DUCKDB_DATA_DIR\"
+      fi
+
+      # Helper: append KEY=VALUE to ENV_FILE only when KEY is absent
+      _add_env_var() {
+        local key=\"\$1\"
+        local val=\"\$2\"
+        if ! grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
+          echo \"\${key}=\${val}\" >> \"\$ENV_FILE\"
+          echo \"[duckdb] added \${key}=\${val} to \$ENV_FILE\"
+        fi
+      }
+
+      _add_env_var DHIS2_DUCKDB_PATH               \"\$DUCKDB_DB_PATH\"
+      _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_COUNT  3
+      _add_env_var DHIS2_DUCKDB_READ_ONLY_RETRY_DELAY_MS  300
+      _add_env_var DHIS2_DUCKDB_SINGLE_WRITER_ENABLED     true
+      _add_env_var DHIS2_DUCKDB_ENABLE_TEMP_SWAP_LOADS    true
+      _add_env_var DHIS2_DUCKDB_VISIBLE_DATASET_MODE      canonical_only
+
+      echo '[duckdb] env vars OK'
+    "
+  }
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse .env variable management
+  # Idempotently writes DHIS2_CLICKHOUSE_* variables into ENV_FILE when
+  # CLICKHOUSE_ENABLED=1.  Only adds variables that are not already present.
+  # ---------------------------------------------------------------------------
+
+  ensure_clickhouse_env_vars() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] ensure ClickHouse env vars in $ENV_FILE"
+
+    exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+
+      ENV_FILE='$ENV_FILE'
+
+      _add_env_var() {
+        local key=\"\$1\"
+        local val=\"\$2\"
+        if ! grep -qE \"^[[:space:]]*\${key}[[:space:]]*=\" \"\$ENV_FILE\"; then
+          echo \"\${key}=\${val}\" >> \"\$ENV_FILE\"
+          echo \"[clickhouse] added \${key} to \$ENV_FILE\"
+        fi
+      }
+
+      _add_env_var DHIS2_SERVING_ENGINE              clickhouse
+      _add_env_var DHIS2_CLICKHOUSE_ENABLED          true
+      _add_env_var DHIS2_CLICKHOUSE_HOST             '${CLICKHOUSE_HOST}'
+      _add_env_var DHIS2_CLICKHOUSE_PORT             '${CLICKHOUSE_NATIVE_PORT}'
+      _add_env_var DHIS2_CLICKHOUSE_HTTP_PORT        '${CLICKHOUSE_HTTP_PORT}'
+      _add_env_var DHIS2_CLICKHOUSE_DATABASE         '${CLICKHOUSE_STAGING_DATABASE}'
+      _add_env_var DHIS2_CLICKHOUSE_SERVING_DATABASE '${CLICKHOUSE_SERVING_DATABASE}'
+      _add_env_var DHIS2_CLICKHOUSE_CONTROL_DATABASE '${CLICKHOUSE_CONTROL_DATABASE}'
+      _add_env_var DHIS2_CLICKHOUSE_USER             '${CLICKHOUSE_USER}'
+      _add_env_var DHIS2_CLICKHOUSE_PASSWORD         '${CLICKHOUSE_PASSWORD}'
+      _add_env_var DHIS2_CLICKHOUSE_SECURE           false
+      _add_env_var DHIS2_CLICKHOUSE_HTTP_PROTOCOL    http
+      _add_env_var DHIS2_CLICKHOUSE_SUPERSET_DB_NAME '${CLICKHOUSE_SUPERSET_DB_NAME}'
+      _add_env_var DHIS2_CLICKHOUSE_REFRESH_STRATEGY versioned_view_swap
+      _add_env_var DHIS2_CLICKHOUSE_KEEP_OLD_VERSIONS 2
+
+      echo '[clickhouse] env vars OK'
+    "
+  }
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse installation
+  # Installs the official ClickHouse server package if not already present.
+  # Safe to call on repeat deployments — skips if already installed.
+  # ---------------------------------------------------------------------------
+
+  install_clickhouse() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] install ClickHouse if missing"
+
+    exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+
+      if command -v clickhouse-server >/dev/null 2>&1; then
+        echo '[clickhouse] already installed, skipping'
+        clickhouse-server --version 2>/dev/null | head -1 || true
+        return 0
+      fi
+
+      echo '[clickhouse] installing ClickHouse server + client'
+      apt-get update -y -qq
+      apt-get install -y -qq apt-transport-https ca-certificates curl gnupg
+
+      # Official ClickHouse APT repo
+      curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' >/dev/null 2>&1 || true
+      curl -fsSL 'https://packages.clickhouse.com/deb/archive-keyring.gpg' \
+        | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+
+      echo 'deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main' \
+        > /etc/apt/sources.list.d/clickhouse.list
+
+      apt-get update -y -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        clickhouse-server clickhouse-client
+
+      echo '[clickhouse] installation complete'
+      clickhouse-server --version 2>/dev/null | head -1 || true
+    "
+  }
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse service startup
+  # ---------------------------------------------------------------------------
+
+  start_clickhouse() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] start and enable ClickHouse"
+
+    exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+
+      if ! command -v clickhouse-server >/dev/null 2>&1; then
+        echo 'ERROR: clickhouse-server not found; run install_clickhouse first'
+        exit 60
+      fi
+
+      # Try systemd first; fall back to service; fall back to direct start
+      if systemctl is-enabled clickhouse-server >/dev/null 2>&1; then
+        systemctl enable clickhouse-server || true
+        systemctl restart clickhouse-server
+      elif command -v service >/dev/null 2>&1; then
+        service clickhouse-server restart || true
+      else
+        clickhouse-server --daemon --config-file=/etc/clickhouse-server/config.xml || true
+      fi
+
+      # Wait for HTTP port to be ready
+      tries=0
+      while ! curl -sf 'http://localhost:${CLICKHOUSE_HTTP_PORT}/ping' >/dev/null 2>&1; do
+        tries=\$((tries + 1))
+        [ \"\$tries\" -lt 30 ] || { echo 'ERROR: ClickHouse did not start in 30s'; exit 61; }
+        sleep 1
+      done
+      echo '[clickhouse] server ready'
+    "
+  }
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse database/user bootstrap
+  # Creates staging + serving + control databases and a dedicated user with
+  # required grants.  Idempotent — safe on repeat runs.
+  # ---------------------------------------------------------------------------
+
+  setup_clickhouse_dbs() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] bootstrap ClickHouse databases and user"
+
+    exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+
+      CH_PASS='${CLICKHOUSE_PASSWORD}'
+      CH_USER='${CLICKHOUSE_USER}'
+      CH_STAGING='${CLICKHOUSE_STAGING_DATABASE}'
+      CH_SERVING='${CLICKHOUSE_SERVING_DATABASE}'
+      CH_CONTROL='${CLICKHOUSE_CONTROL_DATABASE}'
+      HTTP_PORT='${CLICKHOUSE_HTTP_PORT}'
+
+      _ch() {
+        clickhouse-client --multiquery --query=\"\$1\" 2>/dev/null || \
+        curl -sf \"http://localhost:\${HTTP_PORT}/\" --data-binary \"\$1\" || true
+      }
+
+      echo '[clickhouse] creating databases'
+      _ch \"CREATE DATABASE IF NOT EXISTS \\\`\${CH_STAGING}\\\`\"
+      _ch \"CREATE DATABASE IF NOT EXISTS \\\`\${CH_SERVING}\\\`\"
+      _ch \"CREATE DATABASE IF NOT EXISTS \\\`\${CH_CONTROL}\\\`\"
+
+      echo '[clickhouse] creating user \${CH_USER}'
+      _ch \"CREATE USER IF NOT EXISTS \${CH_USER} IDENTIFIED BY '\${CH_PASS}'\"
+
+      echo '[clickhouse] granting privileges'
+      _ch \"GRANT ALL ON \\\`\${CH_STAGING}\\\`.* TO \${CH_USER}\"
+      _ch \"GRANT ALL ON \\\`\${CH_SERVING}\\\`.* TO \${CH_USER}\"
+      _ch \"GRANT ALL ON \\\`\${CH_CONTROL}\\\`.* TO \${CH_USER}\"
+      _ch \"GRANT SELECT ON system.tables TO \${CH_USER}\"
+      _ch \"GRANT SELECT ON system.columns TO \${CH_USER}\"
+      _ch \"GRANT SELECT ON system.parts TO \${CH_USER}\"
+
+      echo '[clickhouse] bootstrap complete'
+    "
+  }
+
+  # ---------------------------------------------------------------------------
+  # Install Python clickhouse-connect into the Superset venv
+  # ---------------------------------------------------------------------------
+
+  install_clickhouse_python_package() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] install clickhouse-connect Python package"
+
+    exec_in_ct "$CT_SUP" "
+      set -euo pipefail
+      echo '[clickhouse] installing ${CLICKHOUSE_PYTHON_PACKAGE}'
+      '$VENV/bin/pip' install -U '${CLICKHOUSE_PYTHON_PACKAGE}'
+
+      '$VENV/bin/python' - <<PY
+import sys
+try:
+    import clickhouse_connect
+    client = clickhouse_connect.get_client(
+        host='${CLICKHOUSE_HOST}',
+        port=${CLICKHOUSE_HTTP_PORT},
+        username='${CLICKHOUSE_USER}',
+        password='${CLICKHOUSE_PASSWORD}',
+    )
+    result = client.query('SELECT version()')
+    print('CLICKHOUSE_CONNECT_OK', result.result_rows[0][0])
+except Exception as e:
+    print(f'CLICKHOUSE_CONNECT_WARN: {e}', file=sys.stderr)
+    sys.exit(0)  # non-fatal — server may not yet be accepting auth
+PY
+    "
+  }
+
+  # ---------------------------------------------------------------------------
+  # Sync ClickHouse connection config into Superset's local_staging_settings
+  # so the UI and engine use the correct user/password/database without any
+  # manual re-entry after deployment.
+  # ---------------------------------------------------------------------------
+
+  sync_superset_clickhouse_config_in_ct() {
+    [[ "${CLICKHOUSE_ENABLED:-1}" == "1" ]] || return 0
+    log "[supersets] sync ClickHouse credentials into Superset local_staging_settings"
+
+    exec_in_ct "$CT_SUP" "
+      set -a; . '$ENV_FILE'; set +a
+      PYTHONPATH='$WORK_SRC' '$VENV/bin/python' - <<PY
+import sys, os
+os.environ.setdefault('FLASK_APP', 'superset')
+sys.path.insert(0, '$WORK_SRC')
+try:
+    from superset import create_app
+    app = create_app()
+    with app.app_context():
+        from superset import db
+        from superset.local_staging.platform_settings import LocalStagingSettings
+        s = LocalStagingSettings.get()
+        cfg = s.get_clickhouse_config()
+        cfg.update({
+            'host':             os.environ.get('DHIS2_CLICKHOUSE_HOST', '${CLICKHOUSE_HOST}'),
+            'http_port':        int(os.environ.get('DHIS2_CLICKHOUSE_HTTP_PORT', '${CLICKHOUSE_HTTP_PORT}')),
+            'port':             int(os.environ.get('DHIS2_CLICKHOUSE_PORT', '${CLICKHOUSE_NATIVE_PORT}')),
+            'database':         os.environ.get('DHIS2_CLICKHOUSE_DATABASE', '${CLICKHOUSE_STAGING_DATABASE}'),
+            'serving_database': os.environ.get('DHIS2_CLICKHOUSE_SERVING_DATABASE', '${CLICKHOUSE_SERVING_DATABASE}'),
+            'user':             os.environ.get('DHIS2_CLICKHOUSE_USER', '${CLICKHOUSE_USER}'),
+            'password':         os.environ.get('DHIS2_CLICKHOUSE_PASSWORD', '${CLICKHOUSE_PASSWORD}'),
+            'secure':           os.environ.get('DHIS2_CLICKHOUSE_SECURE', 'false').lower() == 'true',
+            'verify':           True,
+            'connect_timeout':  10,
+            'send_receive_timeout': 300,
+        })
+        s.set_clickhouse_config(cfg)
+        if s.active_engine != 'clickhouse':
+            s.active_engine = 'clickhouse'
+        db.session.commit()
+        print('CONFIG_SYNC_OK host=${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT} user=${CLICKHOUSE_USER}')
+except Exception as e:
+    print(f'CONFIG_SYNC_WARN: {e}', file=sys.stderr)
+    sys.exit(0)  # non-fatal — operator can update via the UI
+PY
+    "
   }
 
   ensure_superset_config_exists() {
@@ -917,13 +1255,32 @@ PY
           ;;
       esac
 
+      if [ \"\${DUCKDB_ENABLED:-0}\" = '1' ]; then
+        echo '[duckdb] installing DuckDB support packages'
+        '$VENV/bin/pip' install -U \"\${DUCKDB_PYTHON_PACKAGE:-duckdb}\" \"\${DUCKDB_SQLALCHEMY_PACKAGE:-duckdb-engine}\"
+
+        '$VENV/bin/python' - <<'PY'
+from sqlalchemy import create_engine, text
+import duckdb
+import duckdb_engine
+
+engine = create_engine('duckdb:///:memory:')
+with engine.connect() as conn:
+    value = conn.execute(text('select 1')).scalar()
+
+assert value == 1, f'Unexpected DuckDB test result: {value}'
+print('DUCKDB_OK', getattr(duckdb, '__version__', 'unknown'))
+print('DUCKDB_ENGINE_OK', getattr(duckdb_engine, '__version__', 'unknown'))
+PY
+      fi
+
       '$VENV/bin/python' - <<PY
 from importlib.metadata import version, PackageNotFoundError
 import inspect, sys
 sys.path.insert(0, '$WORK_SRC')
 import superset
 
-for name in ['apache-superset', 'celery', 'redis', 'psycopg2-binary', 'gunicorn']:
+for name in ['apache-superset', 'celery', 'redis', 'psycopg2-binary', 'gunicorn', 'clickhouse-connect', 'duckdb', 'duckdb-engine']:
     try:
         print(name, version(name))
     except PackageNotFoundError:
@@ -957,6 +1314,20 @@ import MySQLdb
 print('DB_DRIVER_OK mysqlclient')
 PY
           ;;
+        duckdb* )
+          '$VENV/bin/pip' install -U \"\${DUCKDB_PYTHON_PACKAGE:-duckdb}\" \"\${DUCKDB_SQLALCHEMY_PACKAGE:-duckdb-engine}\"
+          '$VENV/bin/python' - <<'PY'
+from sqlalchemy import create_engine, text
+import duckdb
+import duckdb_engine
+
+engine = create_engine('duckdb:///:memory:')
+with engine.connect() as conn:
+    value = conn.execute(text('select 1')).scalar()
+
+print('DB_DRIVER_OK duckdb', getattr(duckdb, '__version__', 'unknown'), value)
+PY
+          ;;
         sqlite* )
           echo 'ERROR: SQLite metadata backend is not allowed'
           exit 14
@@ -965,6 +1336,27 @@ PY
           echo \"WARN: no explicit driver rule for \$DBURI\"
           ;;
       esac
+
+      if [ \"\${DUCKDB_ENABLED:-0}\" = '1' ]; then
+        '$VENV/bin/python' - <<'PY'
+import importlib
+mods = ['duckdb', 'duckdb_engine']
+for mod in mods:
+    importlib.import_module(mod)
+print('DUCKDB_IMPORTS_OK')
+PY
+      fi
+
+      if [ \"\${CLICKHOUSE_ENABLED:-1}\" = '1' ]; then
+        '$VENV/bin/python' - <<'PY'
+import importlib.util
+if importlib.util.find_spec('clickhouse_connect') is None:
+    print('CLICKHOUSE_CONNECT_MISSING — install with: pip install clickhouse-connect')
+else:
+    import clickhouse_connect
+    print('CLICKHOUSE_CONNECT_OK', getattr(clickhouse_connect, '__version__', 'unknown'))
+PY
+      fi
     "
   }
 
@@ -1693,12 +2085,17 @@ AP
       ;;
     deploy|update)
       ensure_env_exists
+      ensure_duckdb_env_vars
+      ensure_clickhouse_env_vars
       ensure_superset_config_exists
       disable_systemd_superset_services
       detach_legacy_src_mount_if_present
       git_clone_or_update
       install_supersets_base_tools
       ensure_redis_present
+      install_clickhouse
+      start_clickhouse
+      setup_clickhouse_dbs
       db_sync_from_env
       validate_existing_config
       cleanup_container_opt_layout
@@ -1707,6 +2104,8 @@ AP
       sync_config_from_repo_if_available
       frontend_build_in_workdir
       ensure_venv_and_install_backend_from_workdir
+      install_clickhouse_python_package
+      sync_superset_clickhouse_config_in_ct
       install_runtime_db_drivers
       validate_metadata_source
       sync_repo_migrations_to_site_packages
@@ -1722,6 +2121,8 @@ AP
       ;;
     restart)
       ensure_env_exists
+      ensure_duckdb_env_vars
+      ensure_clickhouse_env_vars
       ensure_superset_config_exists
       restart_gunicorn
       install_celery_systemd_units
@@ -1787,6 +2188,15 @@ main() {
       --celery-beat) ENABLE_CELERY_BEAT=1; shift ;;
       --celery-concurrency) CELERY_CONCURRENCY="$2"; shift 2 ;;
 
+      --no-duckdb) DUCKDB_ENABLED=0; shift ;;
+      --duckdb) DUCKDB_ENABLED=1; shift ;;
+
+      --no-clickhouse) CLICKHOUSE_ENABLED=0; shift ;;
+      --clickhouse-password) CLICKHOUSE_PASSWORD="$2"; shift 2 ;;
+      --clickhouse-user) CLICKHOUSE_USER="$2"; shift 2 ;;
+      --clickhouse-host) CLICKHOUSE_HOST="$2"; shift 2 ;;
+      --clickhouse-http-port) CLICKHOUSE_HTTP_PORT="$2"; shift 2 ;;
+
       -h|--help) usage; exit 0 ;;
       *) die "Unknown option: $1" ;;
     esac
@@ -1826,6 +2236,7 @@ main() {
   ssh_tty "chmod 700 '$REMOTE_SCRIPT_PATH' '$REMOTE_ENV_PATH'"
   ssh_tty "sudo bash -lc 'set -a; . \"$REMOTE_ENV_PATH\"; set +a; exec bash \"$REMOTE_SCRIPT_PATH\" __remote \"$cmd\"'"
 }
+
 if [[ "${1:-}" == "__remote" ]]; then
   shift
   remote_worker "$@"

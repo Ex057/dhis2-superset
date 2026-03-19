@@ -63,6 +63,19 @@ CELERY_BEAT_PID_FILE="$PROJECT_DIR/celery_beat.pid"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 CELERY_BEAT_SCHEDULE="$PROJECT_DIR/celerybeat-schedule"
 
+# ClickHouse (set CLICKHOUSE_ENABLED=1 to install and manage it)
+CLICKHOUSE_ENABLED="${CLICKHOUSE_ENABLED:-0}"
+CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-127.0.0.1}"
+CLICKHOUSE_HTTP_PORT="${CLICKHOUSE_HTTP_PORT:-8123}"
+CLICKHOUSE_NATIVE_PORT="${CLICKHOUSE_NATIVE_PORT:-9000}"
+CLICKHOUSE_STAGING_DATABASE="${CLICKHOUSE_STAGING_DATABASE:-dhis2_staging}"
+CLICKHOUSE_SERVING_DATABASE="${CLICKHOUSE_SERVING_DATABASE:-dhis2_serving}"
+CLICKHOUSE_CONTROL_DATABASE="${CLICKHOUSE_CONTROL_DATABASE:-dhis2_control}"
+CLICKHOUSE_USER="${CLICKHOUSE_USER:-dhis2_user}"
+CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-change_me_securely}"
+CLICKHOUSE_SUPERSET_DB_NAME="${CLICKHOUSE_SUPERSET_DB_NAME:-DHIS2 Serving (ClickHouse)}"
+CLICKHOUSE_LOG_FILE="$LOG_DIR/clickhouse.log"
+
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
@@ -296,6 +309,576 @@ validate_frontend() {
   validate_project
   require_cmd npm
   require_file "$FRONTEND_DIR/package.json"
+}
+
+# ----------------------------------------------------------------------------
+# Platform detection
+# ----------------------------------------------------------------------------
+detect_platform() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Darwin)
+      case "$arch" in
+        arm64)  echo "macos-arm64" ;;   # Apple Silicon (M1/M2/M3/M4)
+        x86_64) echo "macos-x86_64" ;; # Intel Mac
+        *)      echo "macos-$arch" ;;
+      esac
+      ;;
+    Linux)
+      case "$arch" in
+        aarch64|arm64) echo "linux-arm64" ;;
+        x86_64)        echo "linux-x86_64" ;;
+        *)             echo "linux-$arch" ;;
+      esac
+      ;;
+    *)
+      echo "unknown-$os-$arch"
+      ;;
+  esac
+}
+
+# ----------------------------------------------------------------------------
+# ClickHouse
+# ----------------------------------------------------------------------------
+
+clickhouse_running() {
+  curl -fsS "http://$CLICKHOUSE_HOST:$CLICKHOUSE_HTTP_PORT/ping" >/dev/null 2>&1
+}
+
+# Return the clickhouse-client executable path, or empty string if not found
+_ch_client() {
+  if command -v clickhouse-client >/dev/null 2>&1; then
+    echo "clickhouse-client"
+  elif command -v clickhouse >/dev/null 2>&1; then
+    # macOS brew install puts a combined 'clickhouse' binary
+    echo "clickhouse client"
+  else
+    echo ""
+  fi
+}
+
+# Run a SQL statement against ClickHouse (tries native client, falls back to HTTP)
+_ch_exec() {
+  local sql="$1"
+  local client
+  client="$(_ch_client)"
+
+  if [[ -n "$client" ]]; then
+    $client \
+      --host="$CLICKHOUSE_HOST" \
+      --port="$CLICKHOUSE_NATIVE_PORT" \
+      --user=default \
+      --multiquery \
+      --query="$sql" 2>/dev/null && return 0
+  fi
+
+  # HTTP fallback (works on any platform, no client binary required)
+  curl -fsS \
+    "http://$CLICKHOUSE_HOST:$CLICKHOUSE_HTTP_PORT/" \
+    --data-binary "$sql" >/dev/null 2>&1
+}
+
+install_clickhouse() {
+  [[ "$CLICKHOUSE_ENABLED" == "1" ]] || return 0
+  header "Installing ClickHouse"
+
+  if clickhouse_running; then
+    ok "ClickHouse is already running — skipping install"
+    return 0
+  fi
+
+  local platform
+  platform="$(detect_platform)"
+  info "Detected platform: $platform"
+
+  case "$platform" in
+    macos-arm64|macos-x86_64)
+      _install_clickhouse_macos
+      ;;
+    linux-x86_64|linux-arm64)
+      _install_clickhouse_linux
+      ;;
+    *)
+      warn "Unsupported platform: $platform"
+      warn "Please install ClickHouse manually: https://clickhouse.com/docs/en/install"
+      return 1
+      ;;
+  esac
+}
+
+_install_clickhouse_macos() {
+  if ! command -v brew >/dev/null 2>&1; then
+    error "Homebrew is required for macOS ClickHouse install"
+    error "Install Homebrew: https://brew.sh"
+    exit 1
+  fi
+
+  if brew list clickhouse >/dev/null 2>&1; then
+    ok "ClickHouse already installed via Homebrew"
+    brew upgrade clickhouse 2>/dev/null || true
+    # Ensure quarantine is cleared after any upgrade
+    local ch_bin
+    ch_bin="$(readlink -f "$(command -v clickhouse)" 2>/dev/null || true)"
+    if [[ -n "$ch_bin" && -f "$ch_bin" ]]; then
+      xattr -dr com.apple.quarantine "$ch_bin" 2>/dev/null || true
+      xattr -dr com.apple.quarantine "$(dirname "$ch_bin")" 2>/dev/null || true
+    fi
+    return 0
+  fi
+
+  info "Installing ClickHouse via Homebrew (native ARM64/x86_64 binary)"
+  brew install clickhouse
+  ok "ClickHouse installed"
+
+  # macOS Gatekeeper: the Homebrew cask ships an unsigned binary — remove the
+  # quarantine attribute so the OS doesn't kill it on first execution.
+  local ch_bin
+  ch_bin="$(readlink -f "$(command -v clickhouse)" 2>/dev/null || true)"
+  if [[ -n "$ch_bin" && -f "$ch_bin" ]]; then
+    info "Removing macOS quarantine attribute from ClickHouse binary"
+    xattr -dr com.apple.quarantine "$ch_bin" 2>/dev/null || true
+    # Also clear from the Caskroom directory tree
+    local cask_dir
+    cask_dir="$(dirname "$ch_bin" 2>/dev/null || true)"
+    if [[ -d "$cask_dir" ]]; then
+      xattr -dr com.apple.quarantine "$cask_dir" 2>/dev/null || true
+    fi
+    ok "Quarantine attribute removed"
+  fi
+
+  # Show installed version
+  if command -v clickhouse >/dev/null 2>&1; then
+    clickhouse server --version 2>/dev/null | head -1 || true
+  fi
+}
+
+_install_clickhouse_linux() {
+  # Detect package manager
+  if command -v apt-get >/dev/null 2>&1; then
+    _install_clickhouse_apt
+  elif command -v yum >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
+    _install_clickhouse_rpm
+  else
+    warn "No supported package manager found (apt/yum/dnf)"
+    warn "Attempting binary install from https://packages.clickhouse.com"
+    _install_clickhouse_binary
+  fi
+}
+
+_install_clickhouse_apt() {
+  if command -v clickhouse-server >/dev/null 2>&1; then
+    ok "ClickHouse server already installed"
+    return 0
+  fi
+
+  info "Installing ClickHouse via APT"
+  export DEBIAN_FRONTEND=noninteractive
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq apt-transport-https ca-certificates curl gnupg
+
+  curl -fsSL 'https://packages.clickhouse.com/deb/archive-keyring.gpg' \
+    | sudo gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+
+  echo 'deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main' \
+    | sudo tee /etc/apt/sources.list.d/clickhouse.list
+
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq clickhouse-server clickhouse-client
+  ok "ClickHouse installed (APT)"
+}
+
+_install_clickhouse_rpm() {
+  if command -v clickhouse-server >/dev/null 2>&1; then
+    ok "ClickHouse server already installed"
+    return 0
+  fi
+
+  info "Installing ClickHouse via RPM"
+  local pm="yum"
+  command -v dnf >/dev/null 2>&1 && pm="dnf"
+
+  sudo "$pm" install -y 'https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-23.8.1.2992.x86_64.rpm' 2>/dev/null || \
+  sudo "$pm" install -y clickhouse-server clickhouse-client || {
+    warn "RPM install failed; trying curl install"
+    _install_clickhouse_binary
+  }
+}
+
+_install_clickhouse_binary() {
+  # Download the self-contained binary (supports x86_64 and ARM64 via GitHub releases)
+  local arch
+  arch="$(uname -m)"
+  local bin_url="https://github.com/ClickHouse/ClickHouse/releases/latest/download/clickhouse-linux-${arch}"
+  local dest="/usr/local/bin/clickhouse"
+
+  info "Downloading ClickHouse binary for $arch"
+  sudo curl -fsSL -o "$dest" "$bin_url"
+  sudo chmod +x "$dest"
+  ok "ClickHouse binary installed at $dest"
+}
+
+start_clickhouse() {
+  [[ "$CLICKHOUSE_ENABLED" == "1" ]] || return 0
+  header "Starting ClickHouse"
+
+  if clickhouse_running; then
+    ok "ClickHouse is already running"
+    return 0
+  fi
+
+  ensure_log_dir
+  local platform
+  platform="$(detect_platform)"
+
+  case "$platform" in
+    macos-arm64|macos-x86_64)
+      _start_clickhouse_macos
+      ;;
+    linux-*)
+      _start_clickhouse_linux
+      ;;
+    *)
+      warn "Unknown platform $platform; trying direct start"
+      _start_clickhouse_direct
+      ;;
+  esac
+
+  # Wait for HTTP ping to confirm readiness
+  info "Waiting for ClickHouse HTTP port $CLICKHOUSE_HTTP_PORT"
+  local tries=0
+  while ! clickhouse_running; do
+    tries=$((tries + 1))
+    if [[ $tries -ge 30 ]]; then
+      error "ClickHouse did not become ready in 30 seconds"
+      [[ -f "$CLICKHOUSE_LOG_FILE" ]] && tail -20 "$CLICKHOUSE_LOG_FILE" || true
+      exit 1
+    fi
+    sleep 1
+  done
+  ok "ClickHouse is ready (HTTP port $CLICKHOUSE_HTTP_PORT)"
+}
+
+_start_clickhouse_macos() {
+  # clickhouse on macOS is a Homebrew Cask (unsigned binary) — brew services
+  # does NOT manage casks.  Use launchctl if our LaunchAgent plist exists,
+  # otherwise fall back to direct nohup start.
+  local plist="$HOME/Library/LaunchAgents/org.clickhouse.server.plist"
+  if [[ -f "$plist" ]]; then
+    info "Starting ClickHouse via launchctl"
+    launchctl load "$plist" 2>/dev/null || true
+    return 0
+  fi
+  _start_clickhouse_direct
+}
+
+_start_clickhouse_linux() {
+  if command -v systemctl >/dev/null 2>&1 && \
+     systemctl list-unit-files clickhouse-server.service >/dev/null 2>&1; then
+    info "Starting ClickHouse via systemctl"
+    sudo systemctl enable clickhouse-server 2>/dev/null || true
+    sudo systemctl start clickhouse-server
+    return 0
+  fi
+
+  if command -v service >/dev/null 2>&1; then
+    info "Starting ClickHouse via service command"
+    sudo service clickhouse-server start 2>/dev/null || true
+    return 0
+  fi
+
+  _start_clickhouse_direct
+}
+
+_start_clickhouse_direct() {
+  ensure_log_dir
+
+  # Find the combined clickhouse binary (cask on macOS) or dedicated server binary
+  local ch_bin=""
+  if command -v clickhouse >/dev/null 2>&1; then
+    ch_bin="$(command -v clickhouse)"
+  elif command -v clickhouse-server >/dev/null 2>&1; then
+    ch_bin="$(command -v clickhouse-server)"
+  else
+    error "Cannot find clickhouse binary; install ClickHouse first"
+    exit 1
+  fi
+
+  # Locate a config file (optional — cask ships with none, use embedded defaults)
+  local config_args=()
+  for candidate in \
+    "$(brew --prefix 2>/dev/null)/etc/clickhouse-server/config.xml" \
+    /etc/clickhouse-server/config.xml \
+    /usr/local/etc/clickhouse-server/config.xml \
+    ; do
+    if [[ -f "$candidate" ]]; then
+      config_args=("--config-file=$candidate")
+      break
+    fi
+  done
+
+  # Data directory — use a stable location under the project logs dir
+  local ch_data_dir="$LOG_DIR/clickhouse-data"
+  mkdir -p "$ch_data_dir"
+
+  info "Starting ClickHouse server (data: $ch_data_dir)"
+  nohup "$ch_bin" server \
+    "${config_args[@]}" \
+    -- \
+    --http_port="$CLICKHOUSE_HTTP_PORT" \
+    --tcp_port="$CLICKHOUSE_NATIVE_PORT" \
+    --path="$ch_data_dir" \
+    --logger.log="$CLICKHOUSE_LOG_FILE" \
+    --logger.errorlog="${CLICKHOUSE_LOG_FILE%.log}-error.log" \
+    --logger.level=warning \
+    >> "$LOG_DIR/clickhouse-stdout.log" 2>&1 &
+  echo $! > "$LOG_DIR/clickhouse.pid"
+  info "ClickHouse PID: $!"
+}
+
+stop_clickhouse() {
+  [[ "$CLICKHOUSE_ENABLED" == "1" ]] || return 0
+  header "Stopping ClickHouse"
+
+  if ! clickhouse_running; then
+    warn "ClickHouse is not running"
+    return 0
+  fi
+
+  local platform
+  platform="$(detect_platform)"
+
+  case "$platform" in
+    macos-arm64|macos-x86_64)
+      # Unload via launchctl if plist exists, then fall back to PID/pkill
+      local plist="$HOME/Library/LaunchAgents/org.clickhouse.server.plist"
+      if [[ -f "$plist" ]]; then
+        launchctl unload "$plist" 2>/dev/null || true
+      fi
+      local ch_pid_file="$LOG_DIR/clickhouse.pid"
+      if [[ -f "$ch_pid_file" ]]; then
+        local ch_pid
+        ch_pid="$(cat "$ch_pid_file" 2>/dev/null || true)"
+        [[ -n "$ch_pid" ]] && kill "$ch_pid" 2>/dev/null || true
+        rm -f "$ch_pid_file"
+      fi
+      pkill -f "clickhouse server" 2>/dev/null || true
+      ;;
+    linux-*)
+      if command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl stop clickhouse-server 2>/dev/null || true
+      elif command -v service >/dev/null 2>&1; then
+        sudo service clickhouse-server stop 2>/dev/null || true
+      else
+        pkill -f "clickhouse-server" 2>/dev/null || true
+      fi
+      ;;
+    *)
+      pkill -f "clickhouse-server" 2>/dev/null || pkill -f "clickhouse server" 2>/dev/null || true
+      ;;
+  esac
+
+  # Confirm it stopped
+  local tries=0
+  while clickhouse_running; do
+    tries=$((tries + 1))
+    [[ $tries -ge 10 ]] && { warn "ClickHouse still running after 10s"; return 1; }
+    sleep 1
+  done
+  ok "ClickHouse stopped"
+}
+
+restart_clickhouse() {
+  header "Restarting ClickHouse"
+  stop_clickhouse || true
+  sleep 1
+  start_clickhouse
+}
+
+# Create databases and the dhis2_user account.
+# Uses the default (unauthenticated) admin connection that ClickHouse
+# provides out of the box on a fresh install.
+setup_clickhouse_dbs() {
+  [[ "$CLICKHOUSE_ENABLED" == "1" ]] || return 0
+  header "Bootstrapping ClickHouse Databases and User"
+
+  if ! clickhouse_running; then
+    error "ClickHouse is not running; start it first with: ./superset-manager.sh start-clickhouse"
+    exit 1
+  fi
+
+  info "Creating databases: $CLICKHOUSE_STAGING_DATABASE, $CLICKHOUSE_SERVING_DATABASE, $CLICKHOUSE_CONTROL_DATABASE"
+  _ch_exec "CREATE DATABASE IF NOT EXISTS \`${CLICKHOUSE_STAGING_DATABASE}\`"
+  _ch_exec "CREATE DATABASE IF NOT EXISTS \`${CLICKHOUSE_SERVING_DATABASE}\`"
+  _ch_exec "CREATE DATABASE IF NOT EXISTS \`${CLICKHOUSE_CONTROL_DATABASE}\`"
+
+  info "Creating user: $CLICKHOUSE_USER"
+  _ch_exec "CREATE USER IF NOT EXISTS ${CLICKHOUSE_USER} IDENTIFIED BY '${CLICKHOUSE_PASSWORD}'"
+
+  info "Granting privileges to $CLICKHOUSE_USER"
+  _ch_exec "GRANT ALL ON \`${CLICKHOUSE_STAGING_DATABASE}\`.* TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT ALL ON \`${CLICKHOUSE_SERVING_DATABASE}\`.* TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT ALL ON \`${CLICKHOUSE_CONTROL_DATABASE}\`.* TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT SELECT ON system.tables  TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT SELECT ON system.columns TO ${CLICKHOUSE_USER}"
+  _ch_exec "GRANT SELECT ON system.parts   TO ${CLICKHOUSE_USER}"
+
+  ok "ClickHouse bootstrap complete"
+  info "  Staging DB:  $CLICKHOUSE_STAGING_DATABASE"
+  info "  Serving DB:  $CLICKHOUSE_SERVING_DATABASE"
+  info "  Control DB:  $CLICKHOUSE_CONTROL_DATABASE"
+  info "  User:        $CLICKHOUSE_USER"
+
+  # Sync credentials into Superset's local_staging_settings so the UI and
+  # engine reflect the just-created user/password without manual re-entry.
+  _sync_superset_clickhouse_config
+}
+
+# Write ClickHouse connection details into local_staging_settings (DB row id=1).
+# Called automatically after setup_clickhouse_dbs so credentials are kept
+# in sync without requiring the operator to re-enter them in the UI.
+_sync_superset_clickhouse_config() {
+  if [[ ! -d "$VENV_DIR" ]]; then
+    warn "_sync_superset_clickhouse_config: venv not found at $VENV_DIR — skipping config sync"
+    return 0
+  fi
+  info "Syncing ClickHouse credentials into Superset local_staging_settings …"
+  "$VENV_DIR/bin/python" - <<PY
+import sys, os
+os.environ.setdefault('FLASK_APP', 'superset')
+try:
+    from superset import create_app
+    app = create_app()
+    with app.app_context():
+        from superset import db
+        from superset.local_staging.platform_settings import LocalStagingSettings
+        import json
+
+        s = LocalStagingSettings.get()
+        cfg = s.get_clickhouse_config()
+        cfg.update({
+            "host":             "${CLICKHOUSE_HOST}",
+            "http_port":        ${CLICKHOUSE_HTTP_PORT},
+            "port":             ${CLICKHOUSE_NATIVE_PORT},
+            "database":         "${CLICKHOUSE_STAGING_DATABASE}",
+            "serving_database": "${CLICKHOUSE_SERVING_DATABASE}",
+            "user":             "${CLICKHOUSE_USER}",
+            "password":         "${CLICKHOUSE_PASSWORD}",
+            "secure":           False,
+            "verify":           True,
+            "connect_timeout":  10,
+            "send_receive_timeout": 300,
+        })
+        s.set_clickhouse_config(cfg)
+        # If active engine is not yet clickhouse, set it now
+        if s.active_engine != "clickhouse":
+            s.active_engine = "clickhouse"
+        db.session.commit()
+        print("CONFIG_SYNC_OK host=${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT} user=${CLICKHOUSE_USER}")
+except Exception as e:
+    print(f"CONFIG_SYNC_WARN: {e}", file=sys.stderr)
+    sys.exit(0)  # Non-fatal — operator can update via the UI
+PY
+}
+
+install_clickhouse_python() {
+  [[ "$CLICKHOUSE_ENABLED" == "1" ]] || return 0
+  header "Installing clickhouse-connect Python Package"
+
+  require_dir "$VENV_DIR"
+  venv_activate
+
+  info "Installing clickhouse-connect into venv"
+  "$VENV_DIR/bin/pip" install --quiet -U clickhouse-connect
+
+  info "Verifying connectivity to $CLICKHOUSE_HOST:$CLICKHOUSE_HTTP_PORT"
+  "$VENV_DIR/bin/python" - <<PY
+import sys
+try:
+    import clickhouse_connect
+    client = clickhouse_connect.get_client(
+        host="${CLICKHOUSE_HOST}",
+        port=${CLICKHOUSE_HTTP_PORT},
+        username="${CLICKHOUSE_USER}",
+        password="${CLICKHOUSE_PASSWORD}",
+    )
+    result = client.query("SELECT version()")
+    version = result.result_rows[0][0] if result.result_rows else "?"
+    print(f"CLICKHOUSE_CONNECT_OK version={version}")
+except Exception as e:
+    print(f"CLICKHOUSE_CONNECT_WARN: {e}", file=sys.stderr)
+    sys.exit(0)  # Non-fatal: server may not be running yet
+PY
+
+  ok "clickhouse-connect installed"
+}
+
+# One-shot: install server, start it, bootstrap DBs/user, install Python pkg,
+# and sync credentials into Superset's local_staging_settings automatically.
+setup_clickhouse_full() {
+  header "Full ClickHouse Setup"
+  CLICKHOUSE_ENABLED=1
+  install_clickhouse
+  start_clickhouse
+  setup_clickhouse_dbs          # creates user + DBs, then calls _sync_superset_clickhouse_config
+  install_clickhouse_python
+  ok "ClickHouse fully configured"
+  echo
+  echo "  HTTP port:   $CLICKHOUSE_HTTP_PORT"
+  echo "  Native port: $CLICKHOUSE_NATIVE_PORT"
+  echo "  Staging DB:  $CLICKHOUSE_STAGING_DATABASE"
+  echo "  Serving DB:  $CLICKHOUSE_SERVING_DATABASE"
+  echo "  User:        $CLICKHOUSE_USER"
+  echo
+  ok "Superset local_staging_settings updated — engine is now 'clickhouse'"
+  info "Credentials can be reviewed / changed at Settings → Local Staging Engine"
+}
+
+clickhouse_status() {
+  header "ClickHouse Status"
+
+  if [[ "$CLICKHOUSE_ENABLED" != "1" ]]; then
+    warn "ClickHouse is disabled (CLICKHOUSE_ENABLED != 1)"
+    info "Enable with: CLICKHOUSE_ENABLED=1 ./superset-manager.sh clickhouse-status"
+    return 0
+  fi
+
+  local platform
+  platform="$(detect_platform)"
+  echo "  Platform:    $platform"
+  echo "  HTTP port:   $CLICKHOUSE_HTTP_PORT"
+  echo "  Native port: $CLICKHOUSE_NATIVE_PORT"
+
+  if ! command -v clickhouse-server >/dev/null 2>&1 && ! command -v clickhouse >/dev/null 2>&1; then
+    warn "ClickHouse is not installed"
+    echo "  Install with: ./superset-manager.sh install-clickhouse"
+    return 0
+  fi
+
+  if clickhouse_running; then
+    ok "ClickHouse is running (HTTP ping OK)"
+
+    # Show version via HTTP
+    local version
+    version="$(curl -fsS "http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}/" \
+      --data-binary "SELECT version()" 2>/dev/null || echo "?")"
+    echo "  Version: $version"
+
+    # Show databases (using dhis2_user credentials)
+    local dbs
+    dbs="$(curl -fsS "http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}/" \
+      -u "${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}" \
+      --data-binary "SHOW DATABASES" 2>/dev/null || echo "")"
+    if [[ -n "$dbs" ]]; then
+      echo "  Databases:"
+      echo "$dbs" | sed 's/^/    /'
+    fi
+  else
+    warn "ClickHouse is not running"
+    echo "  Start with: ./superset-manager.sh start-clickhouse"
+  fi
 }
 
 # ----------------------------------------------------------------------------
@@ -725,6 +1308,14 @@ health_check() {
   else
     warn "Frontend not running"
   fi
+
+  if [[ "${CLICKHOUSE_ENABLED:-0}" == "1" ]]; then
+    if clickhouse_running; then
+      ok "ClickHouse running"
+    else
+      warn "ClickHouse not running"
+    fi
+  fi
 }
 
 view_logs() {
@@ -738,6 +1329,7 @@ view_logs() {
     redis)    file="$REDIS_LOG_FILE" ;;
     celery|celery-worker) file="$CELERY_WORKER_LOG_FILE" ;;
     celery-beat)          file="$CELERY_BEAT_LOG_FILE" ;;
+    clickhouse)           file="$CLICKHOUSE_LOG_FILE" ;;
     *)
       error "Unknown log type: $which"
       exit 1
@@ -929,6 +1521,9 @@ celery_status() {
 # ----------------------------------------------------------------------------
 start_all() {
   header "Starting Backend + Frontend + Celery"
+  if [[ "${CLICKHOUSE_ENABLED:-0}" == "1" ]]; then
+    start_clickhouse
+  fi
   start_backend
   start_celery_worker
   start_celery_beat
@@ -943,6 +1538,9 @@ stop_all() {
   stop_celery_worker || true
   stop_backend || true
   stop_redis || true
+  if [[ "${CLICKHOUSE_ENABLED:-0}" == "1" ]]; then
+    stop_clickhouse || true
+  fi
   ok "All services stopped"
 }
 
@@ -962,6 +1560,9 @@ status_all() {
   celery_status
   frontend_status
   redis_status
+  if [[ "${CLICKHOUSE_ENABLED:-0}" == "1" ]]; then
+    clickhouse_status
+  fi
 }
 
 # ----------------------------------------------------------------------------
@@ -999,6 +1600,15 @@ Commands:
   stop-redis            Stop Redis
   redis-status          Redis status
 
+  install-clickhouse    Install ClickHouse (platform-aware: brew/apt/rpm/binary)
+  start-clickhouse      Start ClickHouse server
+  stop-clickhouse       Stop ClickHouse server
+  restart-clickhouse    Restart ClickHouse server
+  clickhouse-status     ClickHouse status (version, databases)
+  setup-clickhouse      Create ClickHouse databases, user, and grants
+  setup-clickhouse-full Install + start + setup + install Python package (one shot)
+  install-clickhouse-python  Install clickhouse-connect Python package
+
   db-upgrade            Run superset db upgrade && superset init
   install               Install Python requirements into venv
   setup                 Full first-time setup: install + migrate + create admin
@@ -1009,7 +1619,7 @@ Commands:
   cache-all             Clear all caches
   clear-logs            Clear logs
 
-  logs [backend|frontend|redis|celery|celery-beat] [follow]
+  logs [backend|frontend|redis|celery|celery-beat|clickhouse] [follow]
   health
   help
 
@@ -1057,6 +1667,15 @@ main() {
     start-redis) start_redis ;;
     stop-redis) stop_redis ;;
     redis-status) redis_status ;;
+
+    install-clickhouse) install_clickhouse ;;
+    start-clickhouse) start_clickhouse ;;
+    stop-clickhouse) stop_clickhouse ;;
+    restart-clickhouse) restart_clickhouse ;;
+    clickhouse-status) clickhouse_status ;;
+    setup-clickhouse) setup_clickhouse_dbs ;;
+    setup-clickhouse-full) setup_clickhouse_full ;;
+    install-clickhouse-python) install_clickhouse_python ;;
 
     db-upgrade) db_upgrade ;;
     install) install_deps ;;

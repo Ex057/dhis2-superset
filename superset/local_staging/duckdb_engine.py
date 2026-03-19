@@ -137,7 +137,12 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         return path
 
     def _connect(self) -> Any:
-        """Return (or create) the DuckDB connection."""
+        """Return (or create) the write DuckDB connection.
+
+        Only for write paths (insert, upsert, create table, etc.).  Always
+        call ``self.close()`` immediately after every write operation so other
+        processes are not blocked waiting for the lock.
+        """
         try:
             import duckdb  # type: ignore[import]
         except ImportError as exc:
@@ -160,12 +165,42 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                 ) from exc
             memory_limit = self._config.get("memory_limit", "1GB")
             threads = self._config.get("threads", 2)
+            logger.debug(
+                "DuckDB: opening WRITE connection pid=%d path=%s",
+                os.getpid(), db_path,
+            )
             self._conn = duckdb.connect(db_path)
             self._conn.execute(f"SET memory_limit='{memory_limit}'")
             self._conn.execute(f"SET threads={threads}")
             # Ensure schema exists
             self._conn.execute(f"CREATE SCHEMA IF NOT EXISTS {self.STAGING_SCHEMA}")
         return self._conn
+
+    def _connect_read_only(self) -> Any:
+        """Open and return a short-lived read-only DuckDB connection.
+
+        DuckDB allows unlimited simultaneous read-only connections even while a
+        write connection is open, so this never produces a "Conflicting lock"
+        error.  The caller is responsible for closing the returned connection.
+        """
+        try:
+            import duckdb  # type: ignore[import]
+        except ImportError as exc:
+            raise EngineUnavailableError(
+                "duckdb package is not installed. Run: pip install duckdb duckdb-engine"
+            ) from exc
+
+        db_path = self._db_path
+        if not os.path.exists(db_path):
+            raise EngineNotConfiguredError(
+                f"DuckDB file not found: {db_path}. Run the first data sync to "
+                f"initialise the staging database."
+            )
+        logger.debug(
+            "DuckDB: opening READ-ONLY connection pid=%d path=%s",
+            os.getpid(), db_path,
+        )
+        return duckdb.connect(db_path, read_only=True)
 
     # ------------------------------------------------------------------
     # Health
@@ -186,8 +221,9 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
             self._conn = None
 
     def health_check(self) -> dict[str, Any]:
+        conn = None
         try:
-            conn = self._connect()
+            conn = self._connect_read_only()
             conn.execute("SELECT 1")
             return {
                 "ok": True,
@@ -205,6 +241,12 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                 "message": f"DuckDB error: {exc}",
                 "engine": "duckdb",
             }
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
 
     # ------------------------------------------------------------------
     # Schema / table lifecycle
@@ -281,30 +323,44 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         self.close()
 
     def table_exists(self, staged_dataset: Any) -> bool:
+        conn = None
         try:
-            conn = self._connect()
-        except EngineNotConfiguredError:
+            conn = self._connect_read_only()
+        except (EngineNotConfiguredError, EngineUnavailableError):
             return False
-        table = _staging_table_name(staged_dataset)
-        result = conn.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = ? AND table_name = ?",
-            [self.STAGING_SCHEMA, table],
-        ).fetchone()
-        return bool(result and result[0] > 0)
+        try:
+            table = _staging_table_name(staged_dataset)
+            result = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema = ? AND table_name = ?",
+                [self.STAGING_SCHEMA, table],
+            ).fetchone()
+            return bool(result and result[0] > 0)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     def serving_table_exists(self, staged_dataset: Any) -> bool:
+        conn = None
         try:
-            conn = self._connect()
-        except EngineNotConfiguredError:
+            conn = self._connect_read_only()
+        except (EngineNotConfiguredError, EngineUnavailableError):
             return False
-        table = _serving_table_name(staged_dataset)
-        result = conn.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = ? AND table_name = ?",
-            [self.STAGING_SCHEMA, table],
-        ).fetchone()
-        return bool(result and result[0] > 0)
+        try:
+            table = _serving_table_name(staged_dataset)
+            result = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema = ? AND table_name = ?",
+                [self.STAGING_SCHEMA, table],
+            ).fetchone()
+            return bool(result and result[0] > 0)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     # ------------------------------------------------------------------
     # Data ingestion
@@ -468,15 +524,23 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         staged_dataset: Any,
         instance_id: int,
     ) -> list[str]:
-        conn = self._connect()
-        qualified = (
-            f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
-        )
-        rows = conn.execute(
-            f"SELECT DISTINCT pe FROM {qualified} WHERE source_instance_id = ? ORDER BY pe",
-            [instance_id],
-        ).fetchall()
-        return [r[0] for r in rows if r[0]]
+        conn = None
+        try:
+            conn = self._connect_read_only()
+            qualified = (
+                f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
+            )
+            rows = conn.execute(
+                f"SELECT DISTINCT pe FROM {qualified} WHERE source_instance_id = ? ORDER BY pe",
+                [instance_id],
+            ).fetchall()
+            return [r[0] for r in rows if r[0]]
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
 
     def delete_rows_for_instance_periods(
         self,
@@ -513,7 +577,13 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         columns: list[dict[str, Any]] | None = None,
         rows: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Materialise the serving table.
+        """Materialise the serving table using a safe temp-then-swap pattern.
+
+        Data is loaded into a ``<serving>__loading`` staging table first.
+        Once fully loaded, the old live table is dropped and the loading table
+        is atomically renamed to the live name.  UI reads continue hitting the
+        last good live table throughout the load; they only see a brief ~1ms
+        gap between DROP and RENAME (within the same write connection).
 
         When *columns* and *rows* are supplied (from
         ``ensure_serving_table``'s materialized output) they are used to
@@ -522,65 +592,84 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         raw staging table.
         """
         conn = self._connect()
-        serving = f"{self.STAGING_SCHEMA}.{_serving_table_name(staged_dataset)}"
-        conn.execute(f"DROP TABLE IF EXISTS {serving}")
+        serving_name = _serving_table_name(staged_dataset)
+        serving = f"{self.STAGING_SCHEMA}.{serving_name}"
+        loading_name = f"{serving_name}__loading"
+        loading = f"{self.STAGING_SCHEMA}.{loading_name}"
+
+        # Always start clean — drop any abandoned loading table from a previous run
+        conn.execute(f"DROP TABLE IF EXISTS {loading}")
 
         effective_cols = columns or columns_config
-        if effective_cols:
-            # Build typed DDL from column spec
-            col_ddl_parts: list[str] = []
-            col_names: list[str] = []
-            for col in effective_cols:
-                col_name = str(col.get("column_name") or "").strip()
-                if not col_name:
-                    continue
-                col_type = str(col.get("type") or "TEXT").upper()
-                # Map Superset / analytical_serving types → DuckDB types
-                if col_type in ("FLOAT", "DOUBLE", "NUMERIC", "DECIMAL", "NUMBER"):
-                    duckdb_type = "DOUBLE"
-                elif col_type in ("INT", "INTEGER", "BIGINT", "SMALLINT"):
-                    duckdb_type = "BIGINT"
-                elif col_type in ("BOOLEAN", "BOOL"):
-                    duckdb_type = "BOOLEAN"
-                elif col_type in ("DATE",):
-                    duckdb_type = "DATE"
-                elif col_type in ("TIMESTAMP", "DATETIME"):
-                    duckdb_type = "TIMESTAMP"
-                else:
-                    duckdb_type = "TEXT"
-                col_ddl_parts.append(f'"{col_name}" {duckdb_type}')
-                col_names.append(col_name)
+        try:
+            if effective_cols:
+                # Build typed DDL from column spec
+                col_ddl_parts: list[str] = []
+                col_names: list[str] = []
+                for col in effective_cols:
+                    col_name = str(col.get("column_name") or "").strip()
+                    if not col_name:
+                        continue
+                    col_type = str(col.get("type") or "TEXT").upper()
+                    # Map Superset / analytical_serving types → DuckDB types
+                    if col_type in ("FLOAT", "DOUBLE", "NUMERIC", "DECIMAL", "NUMBER"):
+                        duckdb_type = "DOUBLE"
+                    elif col_type in ("INT", "INTEGER", "BIGINT", "SMALLINT"):
+                        duckdb_type = "BIGINT"
+                    elif col_type in ("BOOLEAN", "BOOL"):
+                        duckdb_type = "BOOLEAN"
+                    elif col_type in ("DATE",):
+                        duckdb_type = "DATE"
+                    elif col_type in ("TIMESTAMP", "DATETIME"):
+                        duckdb_type = "TIMESTAMP"
+                    else:
+                        duckdb_type = "TEXT"
+                    col_ddl_parts.append(f'"{col_name}" {duckdb_type}')
+                    col_names.append(col_name)
 
-            if col_ddl_parts:
-                conn.execute(
-                    f"CREATE TABLE {serving} ({', '.join(col_ddl_parts)})"
-                )
-                if rows:
-                    placeholders = ", ".join("?" for _ in col_names)
-                    col_list_sql = ", ".join(f'"{c}"' for c in col_names)
-                    batch: list[tuple] = []
-                    for row in rows:
-                        batch.append(tuple(row.get(c) for c in col_names))
-                        if len(batch) >= 1000:
+                if col_ddl_parts:
+                    conn.execute(
+                        f"CREATE TABLE {loading} ({', '.join(col_ddl_parts)})"
+                    )
+                    if rows:
+                        placeholders = ", ".join("?" for _ in col_names)
+                        col_list_sql = ", ".join(f'"{c}"' for c in col_names)
+                        batch: list[tuple] = []
+                        for row in rows:
+                            batch.append(tuple(row.get(c) for c in col_names))
+                            if len(batch) >= 1000:
+                                conn.executemany(
+                                    f"INSERT INTO {loading} ({col_list_sql}) "
+                                    f"VALUES ({placeholders})",
+                                    batch,
+                                )
+                                batch = []
+                        if batch:
                             conn.executemany(
-                                f"INSERT INTO {serving} ({col_list_sql}) "
+                                f"INSERT INTO {loading} ({col_list_sql}) "
                                 f"VALUES ({placeholders})",
                                 batch,
                             )
-                            batch = []
-                    if batch:
-                        conn.executemany(
-                            f"INSERT INTO {serving} ({col_list_sql}) "
-                            f"VALUES ({placeholders})",
-                            batch,
-                        )
-                logger.info(
-                    "DuckDB: created serving table %s with %d columns, %d rows",
-                    serving, len(col_names), len(rows) if rows else 0,
-                )
-                table_name = _serving_table_name(staged_dataset)
-                self.close()
-                return table_name
+                    logger.info(
+                        "DuckDB: loaded %d rows into loading table %s; promoting to live",
+                        len(rows) if rows else 0, loading,
+                    )
+                    # Atomic promote: drop old live, rename loading → live
+                    conn.execute(f"DROP TABLE IF EXISTS {serving}")
+                    conn.execute(
+                        f"ALTER TABLE {loading} RENAME TO {serving_name}"
+                    )
+                    logger.info("DuckDB: promoted %s → %s", loading, serving)
+                    self.close()
+                    return serving_name
+        except Exception:
+            # Load failed — clean up the loading table, preserve the old live table
+            try:
+                conn.execute(f"DROP TABLE IF EXISTS {loading}")
+            except Exception:  # pylint: disable=broad-except
+                pass
+            self.close()
+            raise
 
         # Fallback: copy raw staging table
         staging = f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
@@ -589,11 +678,13 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
             if instance_id is not None
             else ""
         )
-        conn.execute(f"CREATE TABLE {serving} AS SELECT * FROM {staging} {where}")
-        logger.info("DuckDB: created serving table %s (staging copy)", serving)
-        table_name = _serving_table_name(staged_dataset)
+        conn.execute(f"CREATE TABLE {loading} AS SELECT * FROM {staging} {where}")
+        logger.info("DuckDB: loaded staging copy into %s; promoting to live", loading)
+        conn.execute(f"DROP TABLE IF EXISTS {serving}")
+        conn.execute(f"ALTER TABLE {loading} RENAME TO {serving_name}")
+        logger.info("DuckDB: promoted %s → %s (staging copy)", loading, serving)
         self.close()
-        return table_name
+        return serving_name
 
     def get_serving_table_columns(self, staged_dataset: Any) -> list[str]:
         """Return ordered column names of the serving table (strings, not dicts).
@@ -602,17 +693,24 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         ``staged_dataset_service._serving_table_needs_rebuild`` can compare
         directly against the manifest's expected column-name list.
         """
+        conn = None
         try:
-            conn = self._connect()
+            conn = self._connect_read_only()
         except (EngineNotConfiguredError, EngineUnavailableError):
             return []
-        table = _serving_table_name(staged_dataset)
-        rows = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-            [self.STAGING_SCHEMA, table],
-        ).fetchall()
-        return [r[0] for r in rows]
+        try:
+            table = _serving_table_name(staged_dataset)
+            rows = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
+                [self.STAGING_SCHEMA, table],
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     def fetch_staging_rows(
         self,
@@ -623,51 +721,59 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         filters: list[dict[str, Any]] | None = None,
         ou_filter: "dict[int, Any] | None" = None,
     ) -> Iterator[dict[str, Any]]:
-        conn = self._connect()
-        qualified = (
-            f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
-        )
-        where_parts: list[str] = []
-        params: list[Any] = []
-        if instance_id is not None:
-            where_parts.append("source_instance_id = ?")
-            params.append(instance_id)
-        # Apply ou_filter: per-instance OU allowlist
-        if ou_filter:
-            ou_clauses: list[str] = []
-            for inst_id, ou_set in ou_filter.items():
-                if ou_set is None:
-                    # Include all rows for this instance
-                    ou_clauses.append("source_instance_id = ?")
-                    params.append(int(inst_id))
-                elif ou_set:
-                    placeholders = ", ".join("?" for _ in ou_set)
-                    ou_clauses.append(
-                        f"(source_instance_id = ? AND ou IN ({placeholders}))"
-                    )
-                    params.append(int(inst_id))
-                    params.extend(ou_set)
-                # ou_set == empty frozenset → exclude this instance entirely
-            if ou_clauses:
-                where_parts.append(f"({' OR '.join(ou_clauses)})")
-        where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-        # limit=0 means no limit (fetch all rows)
-        if limit and limit > 0:
-            sql = f"SELECT * FROM {qualified} {where_clause} LIMIT ? OFFSET ?"
-            rows = conn.execute(sql, [*params, limit, offset]).fetchall()
-        else:
-            sql = f"SELECT * FROM {qualified} {where_clause}"
-            if offset:
-                sql += " OFFSET ?"
-                rows = conn.execute(sql, [*params, offset]).fetchall()
+        conn = None
+        try:
+            conn = self._connect_read_only()
+            qualified = (
+                f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
+            )
+            where_parts: list[str] = []
+            params: list[Any] = []
+            if instance_id is not None:
+                where_parts.append("source_instance_id = ?")
+                params.append(instance_id)
+            # Apply ou_filter: per-instance OU allowlist
+            if ou_filter:
+                ou_clauses: list[str] = []
+                for inst_id, ou_set in ou_filter.items():
+                    if ou_set is None:
+                        # Include all rows for this instance
+                        ou_clauses.append("source_instance_id = ?")
+                        params.append(int(inst_id))
+                    elif ou_set:
+                        placeholders = ", ".join("?" for _ in ou_set)
+                        ou_clauses.append(
+                            f"(source_instance_id = ? AND ou IN ({placeholders}))"
+                        )
+                        params.append(int(inst_id))
+                        params.extend(ou_set)
+                    # ou_set == empty frozenset → exclude this instance entirely
+                if ou_clauses:
+                    where_parts.append(f"({' OR '.join(ou_clauses)})")
+            where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+            # limit=0 means no limit (fetch all rows)
+            if limit and limit > 0:
+                sql = f"SELECT * FROM {qualified} {where_clause} LIMIT ? OFFSET ?"
+                rows = conn.execute(sql, [*params, limit, offset]).fetchall()
             else:
-                rows = conn.execute(sql, params).fetchall()
-        cols = [
-            d[0]
-            for d in conn.execute(
-                f"SELECT * FROM {qualified} LIMIT 0"
-            ).description
-        ]
+                sql = f"SELECT * FROM {qualified} {where_clause}"
+                if offset:
+                    sql += " OFFSET ?"
+                    rows = conn.execute(sql, [*params, offset]).fetchall()
+                else:
+                    rows = conn.execute(sql, params).fetchall()
+            cols = [
+                d[0]
+                for d in conn.execute(
+                    f"SELECT * FROM {qualified} LIMIT 0"
+                ).description
+            ]
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
         for row in rows:
             yield dict(zip(cols, row))
 
@@ -701,7 +807,7 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         aggregation_method: str | None = None,
         count_rows: bool = True,
     ) -> dict[str, Any]:
-        conn = self._connect()
+        conn = self._connect_read_only()
         serving = f"{self.STAGING_SCHEMA}.{_serving_table_name(staged_dataset)}"
         # Resolve page-based offset
         effective_limit = int(limit or 1000)
@@ -764,57 +870,64 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         paginated_sql = f"{select_sql} LIMIT {effective_limit} OFFSET {effective_offset}"
 
         try:
-            rows_raw = conn.execute(paginated_sql, params).fetchall()
-            if not resolved_columns:
-                desc = conn.execute(f"SELECT * FROM {serving} LIMIT 0").description
-                resolved_columns = [d[0] for d in desc]
-        except Exception:  # pylint: disable=broad-except
+            try:
+                rows_raw = conn.execute(paginated_sql, params).fetchall()
+                if not resolved_columns:
+                    desc = conn.execute(f"SELECT * FROM {serving} LIMIT 0").description
+                    resolved_columns = [d[0] for d in desc]
+            except Exception:  # pylint: disable=broad-except
+                return {
+                    "columns": [],
+                    "rows": [],
+                    "limit": effective_limit,
+                    "page": safe_page,
+                    "total_pages": 0,
+                    "total_rows": 0,
+                    "serving_table_ref": serving,
+                    "sql_preview": paginated_sql,
+                }
+
+            rows = [dict(zip(resolved_columns, r)) for r in rows_raw]
+
+            total_rows_int = len(rows)
+            if count_rows:
+                try:
+                    count_row = conn.execute(
+                        f"SELECT COUNT(*) FROM ({select_sql}) AS _cnt", params
+                    ).fetchone()
+                    total_rows_int = int(count_row[0] if count_row else 0)
+                except Exception:  # pylint: disable=broad-except
+                    total_rows_int = len(rows)
+
+            total_pages = (
+                max(1, (total_rows_int + effective_limit - 1) // effective_limit)
+                if total_rows_int > 0
+                else (1 if rows else 0)
+            )
+
             return {
-                "columns": [],
-                "rows": [],
+                "columns": resolved_columns,
+                "rows": rows,
                 "limit": effective_limit,
                 "page": safe_page,
-                "total_pages": 0,
-                "total_rows": 0,
+                "total_pages": total_pages,
+                "total_rows": total_rows_int,
                 "serving_table_ref": serving,
                 "sql_preview": paginated_sql,
             }
-
-        rows = [dict(zip(resolved_columns, r)) for r in rows_raw]
-
-        total_rows_int = len(rows)
-        if count_rows:
+        finally:
             try:
-                count_row = conn.execute(
-                    f"SELECT COUNT(*) FROM ({select_sql}) AS _cnt", params
-                ).fetchone()
-                total_rows_int = int(count_row[0] if count_row else 0)
+                conn.close()
             except Exception:  # pylint: disable=broad-except
-                total_rows_int = len(rows)
-
-        total_pages = (
-            max(1, (total_rows_int + effective_limit - 1) // effective_limit)
-            if total_rows_int > 0
-            else (1 if rows else 0)
-        )
-
-        return {
-            "columns": resolved_columns,
-            "rows": rows,
-            "limit": effective_limit,
-            "page": safe_page,
-            "total_pages": total_pages,
-            "total_rows": total_rows_int,
-            "serving_table_ref": serving,
-            "sql_preview": paginated_sql,
-        }
+                pass
 
     def get_staging_table_stats(self, staged_dataset: Any) -> dict[str, Any]:
-        conn = self._connect()
-        qualified = (
-            f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
-        )
+        conn = None
         try:
+            conn = self._connect_read_only()
+            qualified = (
+                f"{self.STAGING_SCHEMA}.{_staging_table_name(staged_dataset)}"
+            )
             row = conn.execute(
                 f"SELECT COUNT(*), MAX(synced_at) FROM {qualified}"
             ).fetchone()
@@ -832,6 +945,12 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
             }
         except Exception as exc:  # pylint: disable=broad-except
             return {"row_count": 0, "total_rows": 0, "error": str(exc), "engine": "duckdb"}
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # pylint: disable=broad-except
+                    pass
 
     # ------------------------------------------------------------------
     # Filter options (for local cascade filters in the Data Workspace)
@@ -889,7 +1008,7 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
 
         hierarchy_columns.sort(key=lambda c: int(c["level"]))
         normalized_filters = [f for f in list(filters or []) if isinstance(f, dict)]
-        conn = self._connect()
+        conn = self._connect_read_only()
 
         def _fetch_options(col_name: str, scoped_filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
             where_parts = [
@@ -923,18 +1042,24 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
                 if str(r[0] or "").strip()
             ]
 
-        org_unit_filters = []
-        for col in hierarchy_columns:
-            cname = str(col["column_name"])
-            scoped = [f for f in normalized_filters if str(f.get("column") or "") != cname]
-            org_unit_filters.append({**col, "options": _fetch_options(cname, scoped)})
+        try:
+            org_unit_filters = []
+            for col in hierarchy_columns:
+                cname = str(col["column_name"])
+                scoped = [f for f in normalized_filters if str(f.get("column") or "") != cname]
+                org_unit_filters.append({**col, "options": _fetch_options(cname, scoped)})
 
-        if period_filter is not None:
-            pcol = str(period_filter["column_name"])
-            scoped_p = [f for f in normalized_filters if str(f.get("column") or "") != pcol]
-            period_filter = {**period_filter, "options": _fetch_options(pcol, scoped_p)}
+            if period_filter is not None:
+                pcol = str(period_filter["column_name"])
+                scoped_p = [f for f in normalized_filters if str(f.get("column") or "") != pcol]
+                period_filter = {**period_filter, "options": _fetch_options(pcol, scoped_p)}
 
-        return {"org_unit_filters": org_unit_filters, "period_filter": period_filter}
+            return {"org_unit_filters": org_unit_filters, "period_filter": period_filter}
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     # ------------------------------------------------------------------
     # Period helper — uses DuckDB connection, not Superset's db.engine
@@ -946,8 +1071,9 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         *,
         use_serving: bool = True,
     ) -> list[str]:
+        conn = None
         try:
-            conn = self._connect()
+            conn = self._connect_read_only()
         except (EngineNotConfiguredError, EngineUnavailableError):
             return []
 
@@ -967,6 +1093,11 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
             return [str(r[0]) for r in rows if r[0]]
         except Exception:  # pylint: disable=broad-except
             return []
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     # ------------------------------------------------------------------
     # Export helpers  (mirrors DHIS2StagingEngine.export_serving_table_*)
@@ -984,12 +1115,17 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         """Return (sql_statement, resolved_column_names) for an export query."""
         full_name = self.get_serving_sql_table_ref(staged_dataset)
 
-        conn = self._connect()
+        conn = self._connect_read_only()
         try:
             desc = conn.execute(f"DESCRIBE {full_name}").fetchall()
             all_columns = [str(row[0]) for row in desc]
         except Exception:  # pylint: disable=broad-except
             all_columns = []
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
         if selected_columns:
             resolved = [c for c in selected_columns if c in all_columns] or all_columns
@@ -1050,8 +1186,14 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         sql, resolved = self._build_export_query(
             staged_dataset, selected_columns, filters, limit
         )
-        conn = self._connect()
-        rows = [dict(zip(resolved, row)) for row in conn.execute(sql).fetchall()]
+        conn = self._connect_read_only()
+        try:
+            rows = [dict(zip(resolved, row)) for row in conn.execute(sql).fetchall()]
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
         output = StringIO()
         writer = csv.DictWriter(output, fieldnames=resolved)
         writer.writeheader()
@@ -1076,8 +1218,14 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         sql, resolved = self._build_export_query(
             staged_dataset, selected_columns, filters, limit
         )
-        conn = self._connect()
-        rows = [dict(zip(resolved, row)) for row in conn.execute(sql).fetchall()]
+        conn = self._connect_read_only()
+        try:
+            rows = [dict(zip(resolved, row)) for row in conn.execute(sql).fetchall()]
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
         output = StringIO()
         writer = csv.DictWriter(output, fieldnames=resolved, delimiter="\t")
         writer.writeheader()
@@ -1101,8 +1249,14 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         sql, resolved = self._build_export_query(
             staged_dataset, selected_columns, filters, limit
         )
-        conn = self._connect()
-        rows = [dict(zip(resolved, row)) for row in conn.execute(sql).fetchall()]
+        conn = self._connect_read_only()
+        try:
+            rows = [dict(zip(resolved, row)) for row in conn.execute(sql).fetchall()]
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
         # Convert non-serializable types (e.g. date, Decimal) to strings
         serialisable = []
         for row in rows:
@@ -1221,37 +1375,45 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
 
     def list_tables(self) -> list[dict[str, Any]]:
         """Return all user tables in the DuckDB staging file."""
+        conn = None
         try:
-            conn = self._connect()
+            conn = self._connect_read_only()
         except (EngineNotConfiguredError, EngineUnavailableError) as exc:
             return [{"error": str(exc)}]
-        rows = conn.execute(
-            "SELECT table_schema, table_name, table_type "
-            "FROM information_schema.tables "
-            "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') "
-            "ORDER BY table_schema, table_name"
-        ).fetchall()
-        tables = []
-        for schema, name, ttype in rows:
+        try:
+            rows = conn.execute(
+                "SELECT table_schema, table_name, table_type "
+                "FROM information_schema.tables "
+                "WHERE table_schema NOT IN ('information_schema', 'pg_catalog') "
+                "ORDER BY table_schema, table_name"
+            ).fetchall()
+            tables = []
+            for schema, name, ttype in rows:
+                try:
+                    count_row = conn.execute(
+                        f'SELECT COUNT(*) FROM "{schema}"."{name}"'
+                    ).fetchone()
+                    row_count = int(count_row[0]) if count_row else 0
+                except Exception:  # pylint: disable=broad-except
+                    row_count = None
+                tables.append({
+                    "schema": schema,
+                    "name": name,
+                    "type": ttype,
+                    "row_count": row_count,
+                })
+            return tables
+        finally:
             try:
-                count_row = conn.execute(
-                    f'SELECT COUNT(*) FROM "{schema}"."{name}"'
-                ).fetchone()
-                row_count = int(count_row[0]) if count_row else 0
+                conn.close()
             except Exception:  # pylint: disable=broad-except
-                row_count = None
-            tables.append({
-                "schema": schema,
-                "name": name,
-                "type": ttype,
-                "row_count": row_count,
-            })
-        return tables
+                pass
 
     def run_explorer_query(self, sql: str, *, limit: int = 500) -> dict[str, Any]:
         """Execute a read-only SELECT against DuckDB and return columns + rows."""
+        conn = None
         try:
-            conn = self._connect()
+            conn = self._connect_read_only()
         except (EngineNotConfiguredError, EngineUnavailableError) as exc:
             raise RuntimeError(str(exc)) from exc
 
@@ -1263,14 +1425,20 @@ class DuckDBStagingEngine(LocalStagingEngineBase):
         else:
             limited_sql = sql_stripped
 
-        result = conn.execute(limited_sql)
-        col_names = [d[0] for d in result.description]
-        rows = result.fetchall()
-        return {
-            "columns": col_names,
-            "rows": [dict(zip(col_names, r)) for r in rows],
-            "rowcount": len(rows),
-        }
+        try:
+            result = conn.execute(limited_sql)
+            col_names = [d[0] for d in result.description]
+            rows = result.fetchall()
+            return {
+                "columns": col_names,
+                "rows": [dict(zip(col_names, r)) for r in rows],
+                "rowcount": len(rows),
+            }
+        finally:
+            try:
+                conn.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     # ------------------------------------------------------------------
     # Superset database registration

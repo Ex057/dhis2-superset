@@ -221,6 +221,16 @@ export default function DHIS2SyncHistory() {
   const activeCount = jobs.filter(j => ACTIVE_STATUSES.has(j.status)).length;
   const metaCount = jobs.filter(j => j.job_category === 'metadata').length;
 
+  // One-job-at-a-time: sets of dataset IDs / metadata scope that already have an active job
+  const activeSyncDatasetIds = new Set<number>(
+    jobs
+      .filter(j => j.job_category === 'sync' && ACTIVE_STATUSES.has(j.status))
+      .map(j => (j as { staged_dataset_id: number }).staged_dataset_id),
+  );
+  const hasActiveMetadataJob = jobs.some(
+    j => j.job_category === 'metadata' && ACTIVE_STATUSES.has(j.status),
+  );
+
   return (
     <DHIS2PageLayout
       activeTab="sync-history"
@@ -298,12 +308,31 @@ export default function DHIS2SyncHistory() {
           </Card>
         </Space>
 
+        {activeCount > 0 && (
+          <Alert
+            type="info"
+            showIcon
+            icon={<SyncOutlined spin />}
+            message={
+              <Space>
+                <Text strong>{t('%s job(s) currently running', activeCount)}</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('Auto-refreshing every 4 s. Only one job per dataset may run at a time.')}
+                </Text>
+              </Space>
+            }
+          />
+        )}
+
         <Card loading={loading} title={t('Jobs')}>
           {jobs.length ? (
             <Table
               dataSource={jobs}
               pagination={{ pageSize: 15, showSizeChanger: false }}
               rowKey={j => `${j.job_category}-${j.id}`}
+              rowClassName={(j: DHIS2AnyJob) =>
+                ACTIVE_STATUSES.has(j.status) ? 'ant-table-row-active-job' : ''
+              }
               columns={[
                 {
                   title: t('Type'),
@@ -416,7 +445,17 @@ export default function DHIS2SyncHistory() {
                   render: (_: unknown, job: DHIS2AnyJob) => {
                     const isActive = ACTIVE_STATUSES.has(job.status);
                     const isTerminal = TERMINAL_STATUSES.has(job.status);
-                    const isPaused = isSyncJob(job) && !isActive;
+                    const isPaused = isSyncJob(job) && !isActive && !isTerminal;
+
+                    // One-job-at-a-time: block restart if another job for this
+                    // dataset (sync) or any metadata job is already running.
+                    const conflictingJobRunning = isSyncJob(job)
+                      ? activeSyncDatasetIds.has(job.staged_dataset_id)
+                      : hasActiveMetadataJob;
+                    const restartBlocked = isTerminal && conflictingJobRunning;
+                    const restartTooltip = restartBlocked
+                      ? t('Another job for this dataset is currently running. Cancel it first.')
+                      : t('Restart with same parameters');
 
                     return (
                       <Space size={4} wrap>
@@ -470,12 +509,13 @@ export default function DHIS2SyncHistory() {
                           </Tooltip>
                         )}
                         {isTerminal && (
-                          <Tooltip title={t('Restart with same parameters')}>
+                          <Tooltip title={restartTooltip}>
                             <Button
+                              disabled={restartBlocked}
                               icon={<ReloadOutlined />}
                               loading={!!actionLoading[`${job.job_category}-${job.id}-restart`]}
                               size="small"
-                              onClick={() => void callJobAction(job, 'restart')}
+                              onClick={restartBlocked ? undefined : () => void callJobAction(job, 'restart')}
                             >
                               {t('Restart')}
                             </Button>

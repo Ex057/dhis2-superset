@@ -53,11 +53,16 @@ interface DuckDBConfig {
 
 interface ClickHouseConfig {
   host: string;
+  http_port?: number;
   port?: number;
   database?: string;
+  serving_database?: string;
   user?: string;
   password?: string;
   secure?: boolean;
+  verify?: boolean;
+  connect_timeout?: number;
+  send_receive_timeout?: number;
 }
 
 interface EngineHealthStatus {
@@ -75,6 +80,7 @@ interface LocalStagingSettingsData {
   retention_enabled: boolean;
   retention_config: Record<string, unknown> | null;
   engine_health_status: EngineHealthStatus;
+  clickhouse_available?: boolean;
 }
 
 interface StagingTable {
@@ -702,10 +708,15 @@ export default function LocalStagingSettingsPage() {
   });
   const [clickhouseInitialValues, setClickhouseInitialValues] = useState<ClickHouseConfig>({
     host: '',
-    port: 9000,
+    http_port: 8123,
     database: 'dhis2_staging',
-    user: 'default',
+    serving_database: 'dhis2_serving',
+    user: 'dhis2_user',
+    password: '',
     secure: false,
+    verify: true,
+    connect_timeout: 10,
+    send_receive_timeout: 300,
   });
   const [retentionEnabled, setRetentionEnabled] = useState(false);
 
@@ -1013,7 +1024,7 @@ export default function LocalStagingSettingsPage() {
                     </Form.Item>
                   </Col>
                   <Col span={8}>
-                    <Form.Item label={t('Port')} name="port">
+                    <Form.Item label={t('HTTP Port')} name="http_port">
                       <InputNumber min={1} max={65535} style={{ width: '100%' }} />
                     </Form.Item>
                   </Col>
@@ -1022,50 +1033,98 @@ export default function LocalStagingSettingsPage() {
                 <Row gutter={16}>
                   <Col span={12}>
                     <Form.Item
-                      label={t('Database')}
+                      label={t('Staging Database')}
                       name="database"
+                      extra={t('Database for raw staging tables (ds_*)')}
                     >
                       <Input />
                     </Form.Item>
                   </Col>
                   <Col span={12}>
-                    <Form.Item label={t('User')} name="user">
+                    <Form.Item
+                      label={t('Serving Database')}
+                      name="serving_database"
+                      extra={t('Database for serving tables (sv_*) queried by Superset')}
+                    >
                       <Input />
                     </Form.Item>
                   </Col>
                 </Row>
 
                 <Row gutter={16}>
-                  <Col span={16}>
-                    <Form.Item label={t('Password')} name="password">
-                      <Input.Password placeholder={t('Leave blank if none')} />
+                  <Col span={12}>
+                    <Form.Item label={t('User')} name="user">
+                      <Input autoComplete="username" />
                     </Form.Item>
                   </Col>
+                  <Col span={12}>
+                    <Form.Item label={t('Password')} name="password">
+                      <Input.Password
+                        placeholder={t('Leave blank if none')}
+                        autoComplete="current-password"
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+
+                <Row gutter={16}>
                   <Col span={8}>
                     <Form.Item
                       label={t('TLS / Secure')}
                       name="secure"
                       valuePropName="checked"
+                      extra={t('Encrypt the connection')}
+                    >
+                      <Switch />
+                    </Form.Item>
+                  </Col>
+                  <Col span={8}>
+                    <Form.Item
+                      label={t('Verify TLS Certificate')}
+                      name="verify"
+                      valuePropName="checked"
+                      extra={t('Validate server certificate')}
                     >
                       <Switch />
                     </Form.Item>
                   </Col>
                 </Row>
+
+                <Row gutter={16}>
+                  <Col span={12}>
+                    <Form.Item
+                      label={t('Connect Timeout (s)')}
+                      name="connect_timeout"
+                    >
+                      <InputNumber min={1} max={120} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item
+                      label={t('Send/Receive Timeout (s)')}
+                      name="send_receive_timeout"
+                    >
+                      <InputNumber min={1} max={3600} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                </Row>
               </Form>
 
-              <Alert
-                message={t('Dependency required')}
-                description={
-                  <Text>
-                    {t('Install the ClickHouse client before enabling this engine:')}
-                    {' '}
-                    <Text code>pip install clickhouse-connect</Text>
-                  </Text>
-                }
-                showIcon
-                type="info"
-                style={{ marginTop: 8 }}
-              />
+              {settings?.clickhouse_available === false && (
+                <Alert
+                  message={t('Dependency required')}
+                  description={
+                    <Text>
+                      {t('Install the ClickHouse client before enabling this engine:')}
+                      {' '}
+                      <Text code>pip install clickhouse-connect</Text>
+                    </Text>
+                  }
+                  showIcon
+                  type="warning"
+                  style={{ marginTop: 8 }}
+                />
+              )}
             </SectionCard>
           )}
 

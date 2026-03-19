@@ -18,6 +18,7 @@ import {
 } from '@superset-ui/core/components';
 
 import { DHIS2WizardState } from '../index';
+import StepLevelMapping from './StepLevelMapping';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -135,6 +136,8 @@ interface OrgUnitLevel {
   aliases?: string[];
   sourceInstanceIds?: number[];
   sourceInstanceNames?: string[];
+  /** Per-instance level name: instanceId → that instance's own name for this level */
+  instanceLevelNames?: Record<number, string>;
 }
 
 interface OrgUnitGroup {
@@ -392,6 +395,7 @@ function normalizeOrgUnitLevels(payload: unknown): OrgUnitLevel[] {
         aliases: [displayName],
         sourceInstanceIds: sourceInstanceId ? [sourceInstanceId] : [],
         sourceInstanceNames: sourceInstanceName ? [sourceInstanceName] : [],
+        instanceLevelNames: sourceInstanceId ? { [sourceInstanceId]: displayName } : {},
       });
       return;
     }
@@ -424,6 +428,13 @@ function normalizeOrgUnitLevels(payload: unknown): OrgUnitLevel[] {
         ...(current.sourceInstanceNames || []),
         sourceInstanceName,
       ];
+    }
+    // Track each instance's own name for this level
+    if (sourceInstanceId && displayName) {
+      current.instanceLevelNames = {
+        ...(current.instanceLevelNames || {}),
+        [sourceInstanceId]: displayName,
+      };
     }
   });
 
@@ -1315,17 +1326,6 @@ export default function WizardStepOrgUnits({
       })),
     [orgUnitGroups],
   );
-  const repositoryLevelMappings = useMemo(
-    () =>
-      orgUnitLevels.map(level => ({
-        level: level.level,
-        label: level.displayName,
-        aliases:
-          (level.aliases || []).filter(alias => alias !== level.displayName) || [],
-        sourceNames: level.sourceInstanceNames || [],
-      })),
-    [orgUnitLevels],
-  );
 
   return (
     <StepContainer>
@@ -1552,34 +1552,16 @@ export default function WizardStepOrgUnits({
               />
             </div>
           ) : effectiveOrgUnitSourceMode === 'repository' ? (
-            <Alert
-              style={{ marginTop: 16 }}
-              type="info"
-              showIcon
-              message={t('Repository merge is enabled')}
-              description={
-                <div>
-                  <div>
-                    {t(
-                      'Shared organisation units are deduplicated into a repository structure, while source lineage and per-instance mappings remain stored in local staging.',
-                    )}
-                  </div>
-                  {repositoryLevelMappings.length > 0 ? (
-                    <div style={{ marginTop: 12 }}>
-                      {repositoryLevelMappings.map(level => (
-                        <div key={level.level}>
-                          <strong>{t('Repo Level %s', level.level)}:</strong>{' '}
-                          {level.label}
-                          {level.aliases.length > 0
-                            ? ` (${level.aliases.join(', ')})`
-                            : ''}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              }
-            />
+            <div style={{ marginTop: 16 }}>
+              <StepLevelMapping
+                wizardState={wizardState}
+                updateState={updateState}
+                orgUnitLevels={orgUnitLevels}
+                instances={activeInstances
+                  .filter(inst => selectedConnectionIds.includes(inst.id))
+                  .map(inst => ({ id: inst.id, name: inst.name }))}
+              />
+            </div>
           ) : (
             <Alert
               style={{ marginTop: 16 }}

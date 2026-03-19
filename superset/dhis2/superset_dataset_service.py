@@ -184,11 +184,16 @@ def register_serving_table_as_superset_dataset(
     if existing is not None:
         # Ensure dhis2_staged_dataset_id is present in extra so that the
         # datasource/api column-values endpoint can route to staging storage.
+        # Also sync serving_database_id/name/table_ref so get_serving_database()
+        # resolves correctly after engine migrations (e.g. DuckDB → ClickHouse).
         _ensure_dhis2_extra(
             existing,
             dataset_id,
             source_database_id=source_database_id,
             source_instance_ids=source_instance_ids,
+            serving_database_id=serving_database_id,
+            serving_database_name=serving_db.database_name,
+            serving_table_ref=serving_table_ref,
         )
         _sync_columns(existing, serving_columns)
         db.session.commit()
@@ -203,6 +208,9 @@ def register_serving_table_as_superset_dataset(
     initial_extra: dict[str, Any] = {
         "dhis2_staged_dataset_id": dataset_id,
         "dhis2_staged_local": True,
+        "dhis2_serving_database_id": serving_database_id,
+        "dhis2_serving_database_name": serving_db.database_name,
+        "dhis2_serving_table_ref": serving_table_ref,
     }
     if source_database_id is not None:
         initial_extra["dhis2_source_database_id"] = source_database_id
@@ -248,6 +256,9 @@ def register_serving_table_as_superset_dataset(
             dataset_id,
             source_database_id=source_database_id,
             source_instance_ids=source_instance_ids,
+            serving_database_id=serving_database_id,
+            serving_database_name=serving_db.database_name,
+            serving_table_ref=serving_table_ref,
         )
         _sync_columns(existing, serving_columns)
         db.session.commit()
@@ -275,6 +286,9 @@ def _ensure_dhis2_extra(
     *,
     source_database_id: int | None = None,
     source_instance_ids: list[int] | None = None,
+    serving_database_id: int | None = None,
+    serving_database_name: str | None = None,
+    serving_table_ref: str | None = None,
 ) -> None:
     """Guarantee that SqlaTable.extra contains DHIS2 routing metadata.
 
@@ -299,6 +313,15 @@ def _ensure_dhis2_extra(
         changed = True
     if source_instance_ids and extra.get("dhis2_source_instance_ids") != source_instance_ids:
         extra["dhis2_source_instance_ids"] = source_instance_ids
+        changed = True
+    if serving_database_id is not None and extra.get("dhis2_serving_database_id") != serving_database_id:
+        extra["dhis2_serving_database_id"] = serving_database_id
+        changed = True
+    if serving_database_name is not None and extra.get("dhis2_serving_database_name") != serving_database_name:
+        extra["dhis2_serving_database_name"] = serving_database_name
+        changed = True
+    if serving_table_ref is not None and extra.get("dhis2_serving_table_ref") != serving_table_ref:
+        extra["dhis2_serving_table_ref"] = serving_table_ref
         changed = True
     if changed:
         sqla_table.extra = json.dumps(extra)

@@ -26,7 +26,9 @@ Configuration (stored in ``local_staging_settings.clickhouse_config`` as JSON)::
     {
         "host": "localhost",
         "port": 9000,
+        "http_port": 8123,
         "database": "dhis2_staging",
+        "serving_database": "dhis2_serving",
         "user": "default",
         "password": "",
         "secure": false,
@@ -35,8 +37,9 @@ Configuration (stored in ``local_staging_settings.clickhouse_config`` as JSON)::
         "send_receive_timeout": 300
     }
 
-Tables use the ``MergeTree`` engine with ``ORDER BY (source_instance_id, dx_uid, pe, ou)``
-so common filter/aggregation patterns are co-located on disk.
+Serving tables use a safe load-then-swap strategy powered by ClickHouse's
+atomic ``EXCHANGE TABLES`` DDL.  The live table is never absent — all reads
+target the previous good version until the new one is fully loaded and validated.
 
 Dependencies
 ------------
@@ -44,13 +47,17 @@ Install with::
 
     pip install clickhouse-connect
 
-``clickhouse-connect`` provides the native binary protocol client.
+``clickhouse-connect`` provides both the native binary protocol client and
+the ``clickhousedb://`` SQLAlchemy dialect (HTTP port 8123).
 """
 
 from __future__ import annotations
 
+import csv
+import json as _json
 import logging
 import re
+from io import StringIO
 from typing import Any, Iterator
 
 from superset.local_staging.base_engine import LocalStagingEngineBase
@@ -61,7 +68,7 @@ from superset.local_staging.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-_PG_IDENT_MAX = 63
+_IDENT_MAX = 63
 _SERVING_PREFIX = "sv"
 
 # ClickHouse column definitions for the staging table
@@ -84,6 +91,24 @@ _CH_STAGING_COLUMNS = [
     ("sync_job_id", "Nullable(Int32)"),
 ]
 
+# Superset/manifest type → ClickHouse type
+_TYPE_MAP: dict[str, str] = {
+    "FLOAT": "Float64",
+    "DOUBLE": "Float64",
+    "NUMERIC": "Float64",
+    "DECIMAL": "Float64",
+    "NUMBER": "Float64",
+    "INT": "Int64",
+    "INTEGER": "Int64",
+    "BIGINT": "Int64",
+    "SMALLINT": "Int32",
+    "BOOLEAN": "UInt8",
+    "BOOL": "UInt8",
+    "DATE": "Date",
+    "TIMESTAMP": "DateTime",
+    "DATETIME": "DateTime",
+}
+
 
 def _sanitize_name(name: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
@@ -92,12 +117,17 @@ def _sanitize_name(name: str) -> str:
 
 def _staging_table_name(staged_dataset: Any) -> str:
     sanitized = _sanitize_name(staged_dataset.name)
-    return f"ds_{staged_dataset.id}_{sanitized}"[:_PG_IDENT_MAX]
+    return f"ds_{staged_dataset.id}_{sanitized}"[:_IDENT_MAX]
 
 
 def _serving_table_name(staged_dataset: Any) -> str:
     sanitized = _sanitize_name(staged_dataset.name)
-    return f"{_SERVING_PREFIX}_{staged_dataset.id}_{sanitized}"[:_PG_IDENT_MAX]
+    return f"{_SERVING_PREFIX}_{staged_dataset.id}_{sanitized}"[:_IDENT_MAX]
+
+
+def _map_type(col_type: str) -> str:
+    """Map a Superset/manifest type string to a ClickHouse type."""
+    return _TYPE_MAP.get(col_type.upper().strip(), "String")
 
 
 class ClickHouseStagingEngine(LocalStagingEngineBase):
@@ -124,14 +154,29 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
 
     @property
     def _database(self) -> str:
+        """Staging database (where raw ds_* tables live)."""
         return self._config.get("database", "dhis2_staging")
+
+    @property
+    def _serving_database(self) -> str:
+        """Serving database (where sv_* live tables live).
+
+        Defaults to the staging database so single-database deployments work
+        without extra config.  Set ``serving_database`` in the config dict to
+        keep staging and serving in separate ClickHouse databases.
+        """
+        return self._config.get("serving_database") or self._database
 
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
 
     def _connect(self) -> Any:
-        """Return (or create) the clickhouse-connect client."""
+        """Return (or create) the clickhouse-connect client.
+
+        The client is reused across calls.  On connection error the cached
+        client is cleared so the next call attempts a fresh connection.
+        """
         try:
             import clickhouse_connect  # type: ignore[import]
         except ImportError as exc:
@@ -146,9 +191,17 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 "ClickHouse engine requires 'host' in configuration"
             )
         if self._client is None:
+            # clickhouse-connect uses the HTTP port (default 8123), not the
+            # native TCP port (9000). Accept both 'http_port' (preferred) and
+            # the legacy 'port' key, defaulting to 8123.
+            http_port = int(
+                self._config.get("http_port")
+                or self._config.get("port")
+                or 8123
+            )
             self._client = clickhouse_connect.get_client(
                 host=host,
-                port=int(self._config.get("port", 9000)),
+                port=http_port,
                 database=self._database,
                 username=self._config.get("user", "default"),
                 password=self._config.get("password", ""),
@@ -161,14 +214,37 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             )
         return self._client
 
+    def _reconnect(self) -> Any:
+        """Force a fresh connection (use after transient errors)."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            self._client = None
+        return self._connect()
+
+    def _cmd(self, sql: str, **kwargs: Any) -> None:
+        """Execute a DDL/mutation command, reconnecting once on failure."""
+        try:
+            self._connect().command(sql, **kwargs)
+        except Exception:  # pylint: disable=broad-except
+            self._reconnect().command(sql, **kwargs)
+
+    def _qry(self, sql: str, **kwargs: Any) -> Any:
+        """Execute a SELECT query, reconnecting once on failure."""
+        try:
+            return self._connect().query(sql, **kwargs)
+        except Exception:  # pylint: disable=broad-except
+            return self._reconnect().query(sql, **kwargs)
+
     # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
 
     def health_check(self) -> dict[str, Any]:
         try:
-            client = self._connect()
-            result = client.query("SELECT version()")
+            result = self._qry("SELECT version()")
             version = result.result_rows[0][0] if result.result_rows else "?"
             return {
                 "ok": True,
@@ -176,6 +252,7 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
                 "engine": "clickhouse",
                 "host": self._config.get("host"),
                 "database": self._database,
+                "serving_database": self._serving_database,
             }
         except EngineNotConfiguredError as exc:
             return {"ok": False, "message": str(exc), "engine": "clickhouse"}
@@ -193,10 +270,9 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
     # ------------------------------------------------------------------
 
     def ensure_schema_exists(self, conn: Any) -> None:
-        client = self._connect()
-        client.command(
-            f"CREATE DATABASE IF NOT EXISTS {self._database}"
-        )
+        self._cmd(f"CREATE DATABASE IF NOT EXISTS `{self._database}`")
+        if self._serving_database != self._database:
+            self._cmd(f"CREATE DATABASE IF NOT EXISTS `{self._serving_database}`")
 
     def get_staging_table_name(self, staged_dataset: Any) -> str:
         return _staging_table_name(staged_dataset)
@@ -205,23 +281,23 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         return _serving_table_name(staged_dataset)
 
     def get_serving_sql_table_ref(self, staged_dataset: Any) -> str:
-        return f"{self._database}.{_serving_table_name(staged_dataset)}"
+        return f"`{self._serving_database}`.`{_serving_table_name(staged_dataset)}`"
 
     def get_superset_sql_table_ref(self, staged_dataset: Any) -> str:
         table = (
             staged_dataset.staging_table_name
             or _staging_table_name(staged_dataset)
         )
-        return f"{self._database}.{table}"
+        return f"`{self._database}`.`{table}`"
 
     def create_staging_table(self, staged_dataset: Any) -> str:
-        client = self._connect()
+        self.ensure_schema_exists(None)
         table = _staging_table_name(staged_dataset)
         cols_ddl = ",\n    ".join(
             f"`{col}` {dtype}" for col, dtype in _CH_STAGING_COLUMNS
         )
-        client.command(f"""
-            CREATE TABLE IF NOT EXISTS {self._database}.{table} (
+        self._cmd(f"""
+            CREATE TABLE IF NOT EXISTS `{self._database}`.`{table}` (
                 {cols_ddl}
             ) ENGINE = MergeTree()
             ORDER BY (source_instance_id, dx_uid, pe, ou)
@@ -231,35 +307,31 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         return table
 
     def drop_staging_table(self, staged_dataset: Any) -> None:
-        client = self._connect()
         table = _staging_table_name(staged_dataset)
-        client.command(f"DROP TABLE IF EXISTS {self._database}.{table}")
+        self._cmd(f"DROP TABLE IF EXISTS `{self._database}`.`{table}`")
         logger.info("ClickHouse: dropped staging table %s.%s", self._database, table)
 
     def truncate_staging_table(self, staged_dataset: Any) -> None:
-        client = self._connect()
         table = _staging_table_name(staged_dataset)
-        client.command(f"TRUNCATE TABLE {self._database}.{table}")
+        self._cmd(f"TRUNCATE TABLE IF EXISTS `{self._database}`.`{table}`")
 
     def table_exists(self, staged_dataset: Any) -> bool:
-        client = self._connect()
         table = _staging_table_name(staged_dataset)
-        result = client.query(
-            "SELECT count() FROM system.tables WHERE database = {db:String} AND name = {tbl:String}",
+        result = self._qry(
+            "SELECT count() FROM system.tables "
+            "WHERE database = {db:String} AND name = {tbl:String}",
             parameters={"db": self._database, "tbl": table},
         )
-        count = result.result_rows[0][0] if result.result_rows else 0
-        return count > 0
+        return bool(result.result_rows and result.result_rows[0][0] > 0)
 
     def serving_table_exists(self, staged_dataset: Any) -> bool:
-        client = self._connect()
         table = _serving_table_name(staged_dataset)
-        result = client.query(
-            "SELECT count() FROM system.tables WHERE database = {db:String} AND name = {tbl:String}",
-            parameters={"db": self._database, "tbl": table},
+        result = self._qry(
+            "SELECT count() FROM system.tables "
+            "WHERE database = {db:String} AND name = {tbl:String}",
+            parameters={"db": self._serving_database, "tbl": table},
         )
-        count = result.result_rows[0][0] if result.result_rows else 0
-        return count > 0
+        return bool(result.result_rows and result.result_rows[0][0] > 0)
 
     # ------------------------------------------------------------------
     # Data ingestion
@@ -276,23 +348,19 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         sync_job_id: int | None = None,
         replace_all: bool = False,
     ) -> dict[str, int]:
-        client = self._connect()
-        table = f"{self._database}.{_staging_table_name(staged_dataset)}"
-        deleted = 0
+        table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
         if replace_all:
-            client.command(
+            self._cmd(
                 f"ALTER TABLE {table} DELETE WHERE source_instance_id = {{id:Int32}}",
                 parameters={"id": instance_id},
             )
-            deleted = -1  # ClickHouse doesn't return row count for mutations
         elif periods:
             periods_list = ", ".join(f"'{p}'" for p in periods)
-            client.command(
+            self._cmd(
                 f"ALTER TABLE {table} DELETE "
                 f"WHERE source_instance_id = {{id:Int32}} AND pe IN ({periods_list})",
                 parameters={"id": instance_id},
             )
-            deleted = -1
 
         inserted = self.insert_rows(
             staged_dataset,
@@ -301,7 +369,8 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             rows,
             sync_job_id=sync_job_id,
         )
-        return {"deleted": deleted, "inserted": inserted}
+        # ClickHouse async mutations don't return row counts for deletes
+        return {"deleted": -1, "inserted": inserted}
 
     def insert_rows(
         self,
@@ -314,8 +383,7 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
     ) -> int:
         if not rows:
             return 0
-        client = self._connect()
-        table = f"{self._database}.{_staging_table_name(staged_dataset)}"
+        table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
         _ROW_COLS = (
             "dx_uid", "dx_name", "dx_type", "pe", "ou", "ou_name",
             "ou_level", "value", "value_numeric", "co_uid", "co_name", "aoc_uid",
@@ -324,26 +392,68 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
             "source_instance_id", "source_instance_name", "sync_job_id",
             *_ROW_COLS,
         ]
-        from datetime import datetime, timezone
-        data = []
-        for row in rows:
-            data.append([
+        data = [
+            [
                 instance_id,
                 instance_name,
                 sync_job_id,
                 *(row.get(col) for col in _ROW_COLS),
-            ])
-        client.insert(table, data, column_names=col_names)
+            ]
+            for row in rows
+        ]
+        self._connect().insert(table, data, column_names=col_names)
         return len(rows)
+
+    def upsert_rows_for_instance(
+        self,
+        staged_dataset: Any,
+        instance_id: int,
+        instance_name: str,
+        rows: list[dict[str, Any]],
+        *,
+        sync_job_id: int | None = None,
+    ) -> int:
+        """Delete-then-insert to simulate upsert on the ClickHouse staging table.
+
+        ClickHouse does not have SQL UPSERT semantics.  We delete any existing
+        rows whose natural key ``(source_instance_id, dx_uid, pe, ou)`` matches
+        the incoming batch, then bulk-insert the new rows.
+        """
+        if not rows:
+            return 0
+
+        table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
+        keys: set[tuple[str, str, str]] = set()
+        for row in rows:
+            dx = row.get("dx_uid") or ""
+            pe = row.get("pe") or ""
+            ou = row.get("ou") or ""
+            if dx and pe and ou:
+                keys.add((dx, pe, ou))
+
+        if keys:
+            # Build a big IN-list of concat keys (safe sentinel \x00 separator)
+            composite_vals = ", ".join(
+                f"'{dx}\x00{pe}\x00{ou}'" for dx, pe, ou in keys
+            )
+            self._cmd(
+                f"ALTER TABLE {table} DELETE "
+                f"WHERE source_instance_id = {{id:Int32}} "
+                f"AND concat(dx_uid, char(0), pe, char(0), ou) IN ({composite_vals})",
+                parameters={"id": instance_id},
+            )
+
+        return self.insert_rows(
+            staged_dataset, instance_id, instance_name, rows, sync_job_id=sync_job_id
+        )
 
     def get_instance_periods(
         self,
         staged_dataset: Any,
         instance_id: int,
     ) -> list[str]:
-        client = self._connect()
-        table = f"{self._database}.{_staging_table_name(staged_dataset)}"
-        result = client.query(
+        table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
+        result = self._qry(
             f"SELECT DISTINCT pe FROM {table} "
             f"WHERE source_instance_id = {{id:Int32}} ORDER BY pe",
             parameters={"id": instance_id},
@@ -358,18 +468,17 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
     ) -> int:
         if not periods:
             return 0
-        client = self._connect()
-        table = f"{self._database}.{_staging_table_name(staged_dataset)}"
+        table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
         periods_list = ", ".join(f"'{p}'" for p in periods)
-        client.command(
+        self._cmd(
             f"ALTER TABLE {table} DELETE "
             f"WHERE source_instance_id = {{id:Int32}} AND pe IN ({periods_list})",
             parameters={"id": instance_id},
         )
-        return -1  # ClickHouse async mutations don't return counts
+        return -1  # async mutation — count not available
 
     # ------------------------------------------------------------------
-    # Serving table
+    # Serving table — safe atomic swap via EXCHANGE TABLES
     # ------------------------------------------------------------------
 
     def create_or_replace_serving_table(
@@ -381,34 +490,164 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         columns: list[dict[str, Any]] | None = None,
         rows: list[dict[str, Any]] | None = None,
     ) -> str:
-        client = self._connect()
-        staging = f"{self._database}.{_staging_table_name(staged_dataset)}"
-        serving = f"{self._database}.{_serving_table_name(staged_dataset)}"
-        client.command(f"DROP TABLE IF EXISTS {serving}")
-        where = (
-            f"WHERE source_instance_id = {int(instance_id)}"
-            if instance_id is not None
-            else ""
-        )
-        client.command(
-            f"CREATE TABLE {serving} ENGINE = MergeTree() "
-            f"ORDER BY (source_instance_id, dx_uid, pe, ou) "
-            f"AS SELECT * FROM {staging} {where}"
-        )
-        logger.info("ClickHouse: created serving table %s", serving)
-        return _serving_table_name(staged_dataset)
+        """Materialise the serving table using an atomic load-then-swap pattern.
 
-    def get_serving_table_columns(self, staged_dataset: Any) -> list[dict[str, Any]]:
-        client = self._connect()
-        table = _serving_table_name(staged_dataset)
-        result = client.query(
-            "SELECT name, type FROM system.columns "
-            "WHERE database = {db:String} AND table = {tbl:String} ORDER BY position",
-            parameters={"db": self._database, "tbl": table},
+        Strategy
+        --------
+        1. Build schema from *columns* / *columns_config* (typed DDL) or fall
+           back to a ``SELECT * FROM staging`` copy.
+        2. Load all data into a ``<serving>__loading`` table.
+        3. Atomically swap the live table and loading table with
+           ``EXCHANGE TABLES`` (truly atomic in ClickHouse).
+        4. Drop the post-swap loading table (which now holds old data).
+
+        On first run (live table absent) ``RENAME TABLE`` is used instead of
+        ``EXCHANGE TABLES`` since ClickHouse requires both tables to exist for
+        the exchange.
+
+        UI reads continue against the previous live table throughout the load.
+        Only the instant of the exchange is "in-flight" (~microseconds).
+        """
+        self.ensure_schema_exists(None)
+        serving_db = self._serving_database
+        serving_name = _serving_table_name(staged_dataset)
+        loading_name = f"{serving_name}__loading"
+        serving_ref = f"`{serving_db}`.`{serving_name}`"
+        loading_ref = f"`{serving_db}`.`{loading_name}`"
+
+        # Drop any abandoned loading table from a previous failed run
+        self._cmd(f"DROP TABLE IF EXISTS {loading_ref}")
+
+        effective_cols = columns or columns_config
+
+        try:
+            if effective_cols:
+                col_ddl_parts: list[str] = []
+                col_names: list[str] = []
+                for col in effective_cols:
+                    col_name = str(col.get("column_name") or "").strip()
+                    if not col_name:
+                        continue
+                    col_type = _map_type(str(col.get("type") or "TEXT"))
+                    col_ddl_parts.append(f"`{col_name}` {col_type}")
+                    col_names.append(col_name)
+
+                if col_ddl_parts:
+                    self._cmd(
+                        f"CREATE TABLE {loading_ref} "
+                        f"({', '.join(col_ddl_parts)}) "
+                        f"ENGINE = MergeTree() ORDER BY tuple()"
+                    )
+                    if rows:
+                        col_list = ", ".join(f"`{c}`" for c in col_names)
+                        data = [
+                            [row.get(c) for c in col_names]
+                            for row in rows
+                        ]
+                        # Insert in batches of 10 000 to avoid oversized requests
+                        batch_size = 10_000
+                        client = self._connect()
+                        for i in range(0, len(data), batch_size):
+                            client.insert(
+                                f"`{serving_db}`.`{loading_name}`",
+                                data[i : i + batch_size],
+                                column_names=col_names,
+                            )
+                    logger.info(
+                        "ClickHouse: loaded %d rows into %s; promoting to live",
+                        len(rows) if rows else 0, loading_ref,
+                    )
+                    self._promote_loading_to_live(
+                        serving_db, serving_name, loading_name
+                    )
+                    return serving_name
+
+            # Fallback: copy from the raw staging table
+            staging_db = self._database
+            staging_name = _staging_table_name(staged_dataset)
+            where = (
+                f"WHERE source_instance_id = {int(instance_id)}"
+                if instance_id is not None
+                else ""
+            )
+            self._cmd(
+                f"CREATE TABLE {loading_ref} "
+                f"ENGINE = MergeTree() ORDER BY (source_instance_id, dx_uid, pe, ou) "
+                f"AS SELECT * FROM `{staging_db}`.`{staging_name}` {where}"
+            )
+            logger.info(
+                "ClickHouse: loaded staging copy into %s; promoting to live",
+                loading_ref,
+            )
+            self._promote_loading_to_live(serving_db, serving_name, loading_name)
+            return serving_name
+
+        except Exception:
+            # Clean up failed loading table; old live table is untouched
+            try:
+                self._cmd(f"DROP TABLE IF EXISTS {loading_ref}")
+            except Exception:  # pylint: disable=broad-except
+                pass
+            raise
+
+    def _promote_loading_to_live(
+        self,
+        db: str,
+        live_name: str,
+        loading_name: str,
+    ) -> None:
+        """Atomically swap loading → live using EXCHANGE TABLES or RENAME.
+
+        ``EXCHANGE TABLES`` requires both tables to exist.  On first deployment
+        the live table doesn't exist yet, so we use RENAME instead.
+        """
+        live_ref = f"`{db}`.`{live_name}`"
+        loading_ref = f"`{db}`.`{loading_name}`"
+
+        live_exists_result = self._qry(
+            "SELECT count() FROM system.tables "
+            "WHERE database = {db:String} AND name = {tbl:String}",
+            parameters={"db": db, "tbl": live_name},
         )
-        return [
-            {"column_name": r[0], "type": r[1]} for r in result.result_rows
-        ]
+        live_exists = bool(
+            live_exists_result.result_rows
+            and live_exists_result.result_rows[0][0] > 0
+        )
+
+        if live_exists:
+            # Atomic swap — old live goes into loading_ref, new data goes live
+            self._cmd(f"EXCHANGE TABLES {live_ref} AND {loading_ref}")
+            # Drop what is now the old data (in loading_ref)
+            self._cmd(f"DROP TABLE IF EXISTS {loading_ref}")
+            logger.info(
+                "ClickHouse: EXCHANGE TABLES promoted %s → %s", loading_ref, live_ref
+            )
+        else:
+            # First run: simple rename
+            self._cmd(
+                f"RENAME TABLE {loading_ref} TO `{db}`.`{live_name}`"
+            )
+            logger.info(
+                "ClickHouse: RENAME promoted %s → %s", loading_ref, live_ref
+            )
+
+    def get_serving_table_columns(self, staged_dataset: Any) -> list[str]:
+        """Return ordered column names of the serving table.
+
+        Returns ``list[str]`` (bare column names) so callers comparing against
+        the manifest column-name list work correctly.
+        """
+        table = _serving_table_name(staged_dataset)
+        try:
+            result = self._qry(
+                "SELECT name FROM system.columns "
+                "WHERE database = {db:String} AND table = {tbl:String} "
+                "ORDER BY position",
+                parameters={"db": self._serving_database, "tbl": table},
+            )
+            return [r[0] for r in result.result_rows]
+        except Exception:  # pylint: disable=broad-except
+            return []
 
     def fetch_staging_rows(
         self,
@@ -419,101 +658,571 @@ class ClickHouseStagingEngine(LocalStagingEngineBase):
         filters: list[dict[str, Any]] | None = None,
         ou_filter: "dict | None" = None,
     ) -> Iterator[dict[str, Any]]:
-        client = self._connect()
-        table = f"{self._database}.{_staging_table_name(staged_dataset)}"
-        where = ""
+        table = f"`{self._database}`.`{_staging_table_name(staged_dataset)}`"
+        where_parts: list[str] = []
+        params: dict[str, Any] = {}
         if instance_id is not None:
-            where = f"WHERE source_instance_id = {int(instance_id)}"
-        result = client.query(
-            f"SELECT * FROM {table} {where} LIMIT {limit} OFFSET {offset}"
-        )
+            where_parts.append("source_instance_id = {inst_id:Int32}")
+            params["inst_id"] = instance_id
+        if ou_filter:
+            ou_clauses: list[str] = []
+            for i, (inst_id, ou_set) in enumerate(ou_filter.items()):
+                k = f"ou_inst_{i}"
+                if ou_set is None:
+                    ou_clauses.append(f"source_instance_id = {{{k}:Int32}}")
+                    params[k] = int(inst_id)
+                elif ou_set:
+                    ou_vals = ", ".join(f"'{v}'" for v in ou_set)
+                    ou_clauses.append(
+                        f"(source_instance_id = {{{k}:Int32}} AND ou IN ({ou_vals}))"
+                    )
+                    params[k] = int(inst_id)
+            if ou_clauses:
+                where_parts.append(f"({' OR '.join(ou_clauses)})")
+        where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        sql = f"SELECT * FROM {table} {where} LIMIT {int(limit)} OFFSET {int(offset)}"
+        result = self._qry(sql, parameters=params if params else None)
         cols = result.column_names
-        for row in result.result_rows:
-            yield dict(zip(cols, row))
+        yield from (dict(zip(cols, r)) for r in result.result_rows)
+
+    _AGGREGATION_FN_MAP = {
+        "sum": "sum",
+        "avg": "avg",
+        "average": "avg",
+        "max": "max",
+        "min": "min",
+        "count": "count",
+    }
 
     def query_serving_table(
         self,
         staged_dataset: Any,
         *,
         columns: list[str] | None = None,
+        selected_columns: list[str] | None = None,
         filters: list[dict[str, Any]] | None = None,
         aggregation: str | None = None,
         group_by: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int = 1000,
         offset: int = 0,
+        page: int | None = None,
+        group_by_columns: list[str] | None = None,
+        metric_column: str | None = None,
+        metric_alias: str | None = None,
+        aggregation_method: str | None = None,
+        count_rows: bool = True,
     ) -> dict[str, Any]:
-        client = self._connect()
-        table = f"{self._database}.{_serving_table_name(staged_dataset)}"
-        col_list = ", ".join(columns) if columns else "*"
-        result = client.query(
-            f"SELECT {col_list} FROM {table} LIMIT {limit} OFFSET {offset}"
+        table = (
+            f"`{self._serving_database}`."
+            f"`{_serving_table_name(staged_dataset)}`"
         )
-        cols = result.column_names
+        effective_limit = int(limit or 1000)
+        safe_page = max(1, int(page or 1))
+        effective_offset = int(offset or (safe_page - 1) * effective_limit)
+
+        # Build WHERE clause
+        where_parts: list[str] = []
+        for filt in list(filters or []):
+            if not isinstance(filt, dict):
+                continue
+            col = str(filt.get("column") or "").strip()
+            val = filt.get("value")
+            if col and val is not None:
+                if isinstance(val, (list, tuple)):
+                    vals_sql = ", ".join(f"'{v}'" for v in val)
+                    where_parts.append(f"`{col}` IN ({vals_sql})")
+                else:
+                    where_parts.append(f"`{col}` = '{val}'")
+        where_sql = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+        # Resolve aggregation
+        eff_agg = aggregation_method or aggregation
+        eff_group = group_by_columns or group_by
+        eff_metric = metric_column
+        eff_alias = metric_alias
+
+        if eff_agg and eff_group and eff_metric:
+            agg_fn = self._AGGREGATION_FN_MAP.get(
+                str(eff_agg).strip().lower(), "sum"
+            )
+            quoted_group = ", ".join(f"`{c}`" for c in eff_group)
+            if eff_agg.lower() == "count":
+                agg_expr = "count(*)"
+            else:
+                agg_expr = f"{agg_fn}(ifNull(`{eff_metric}`, 0))"
+            alias = eff_alias or f"{agg_fn}_{eff_metric}"
+            select_sql = (
+                f"SELECT {quoted_group}, {agg_expr} AS `{alias}` "
+                f"FROM {table}{where_sql} GROUP BY {quoted_group}"
+            )
+            resolved_columns = list(eff_group) + [alias]
+        else:
+            effective_cols = selected_columns or columns
+            if effective_cols:
+                col_list = ", ".join(f"`{c}`" for c in effective_cols)
+                resolved_columns = list(effective_cols)
+            else:
+                col_list = "*"
+                resolved_columns = []
+            select_sql = f"SELECT {col_list} FROM {table}{where_sql}"
+
+        paginated_sql = (
+            f"{select_sql} LIMIT {effective_limit} OFFSET {effective_offset}"
+        )
+
+        try:
+            result = self._qry(paginated_sql)
+            rows_raw = result.result_rows
+            if not resolved_columns:
+                resolved_columns = list(result.column_names)
+        except Exception:  # pylint: disable=broad-except
+            return {
+                "columns": [],
+                "rows": [],
+                "limit": effective_limit,
+                "page": safe_page,
+                "total_pages": 0,
+                "total_rows": 0,
+                "serving_table_ref": table,
+                "sql_preview": paginated_sql,
+            }
+
+        rows = [dict(zip(resolved_columns, r)) for r in rows_raw]
+
+        total_rows_int = len(rows)
+        if count_rows:
+            try:
+                cnt = self._qry(
+                    f"SELECT count() FROM ({select_sql}) AS _cnt"
+                )
+                total_rows_int = int(
+                    cnt.result_rows[0][0] if cnt.result_rows else 0
+                )
+            except Exception:  # pylint: disable=broad-except
+                total_rows_int = len(rows)
+
+        total_pages = (
+            max(1, (total_rows_int + effective_limit - 1) // effective_limit)
+            if total_rows_int > 0
+            else (1 if rows else 0)
+        )
+
         return {
-            "columns": list(cols),
-            "rows": [dict(zip(cols, r)) for r in result.result_rows],
-            "rowcount": len(result.result_rows),
+            "columns": resolved_columns,
+            "rows": rows,
+            "limit": effective_limit,
+            "page": safe_page,
+            "total_pages": total_pages,
+            "total_rows": total_rows_int,
+            "serving_table_ref": table,
+            "sql_preview": paginated_sql,
         }
 
     def get_staging_table_stats(self, staged_dataset: Any) -> dict[str, Any]:
-        client = self._connect()
         table = _staging_table_name(staged_dataset)
         try:
-            result = client.query(
+            row_result = self._qry(
                 "SELECT count(), max(synced_at) FROM {db:Identifier}.{tbl:Identifier}",
                 parameters={"db": self._database, "tbl": table},
             )
-            row = result.result_rows[0] if result.result_rows else (0, None)
+            row = row_result.result_rows[0] if row_result.result_rows else (0, None)
             count, last_sync = row
-            size_result = client.query(
+            size_result = self._qry(
                 "SELECT sum(bytes_on_disk) FROM system.parts "
                 "WHERE database = {db:String} AND table = {tbl:String} AND active",
                 parameters={"db": self._database, "tbl": table},
             )
-            size = (
-                size_result.result_rows[0][0] if size_result.result_rows else 0
+            disk_bytes = int(
+                size_result.result_rows[0][0]
+                if size_result.result_rows and size_result.result_rows[0][0]
+                else 0
             )
             return {
                 "row_count": int(count or 0),
+                "total_rows": int(count or 0),
                 "last_synced_at": str(last_sync) if last_sync else None,
-                "disk_bytes": int(size or 0),
+                "disk_bytes": disk_bytes,
                 "engine": "clickhouse",
                 "host": self._config.get("host"),
                 "database": self._database,
             }
         except Exception as exc:  # pylint: disable=broad-except
-            return {"row_count": 0, "error": str(exc), "engine": "clickhouse"}
+            return {
+                "row_count": 0,
+                "total_rows": 0,
+                "error": str(exc),
+                "engine": "clickhouse",
+            }
+
+    # ------------------------------------------------------------------
+    # Filter options (for cascade filters in the Data Workspace)
+    # ------------------------------------------------------------------
+
+    def get_serving_filter_options(
+        self,
+        staged_dataset: Any,
+        *,
+        columns: list[dict[str, Any]] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Return distinct org-unit hierarchy and period values from the serving table."""
+        serving_ref = self.get_serving_sql_table_ref(staged_dataset)
+        available_col_names = set(self.get_serving_table_columns(staged_dataset))
+        if not available_col_names:
+            return {"org_unit_filters": [], "period_filter": None}
+
+        hierarchy_columns: list[dict[str, Any]] = []
+        period_filter: dict[str, Any] | None = None
+
+        for col_spec in list(columns or []):
+            col_name = str(col_spec.get("column_name") or "").strip()
+            if not col_name or col_name not in available_col_names:
+                continue
+            raw_extra = col_spec.get("extra") or {}
+            if isinstance(raw_extra, str):
+                try:
+                    raw_extra = _json.loads(raw_extra) or {}
+                except Exception:  # pylint: disable=broad-except
+                    raw_extra = {}
+            extra = raw_extra if isinstance(raw_extra, dict) else {}
+
+            if extra.get("dhis2_is_ou_hierarchy") is True:
+                try:
+                    level = int(extra.get("dhis2_ou_level"))
+                except (TypeError, ValueError):
+                    continue
+                hierarchy_columns.append({
+                    "column_name": col_name,
+                    "verbose_name": col_spec.get("verbose_name") or col_name,
+                    "level": level,
+                })
+            elif extra.get("dhis2_is_period") is True and period_filter is None:
+                period_filter = {
+                    "column_name": col_name,
+                    "verbose_name": col_spec.get("verbose_name") or col_name,
+                }
+
+        hierarchy_columns.sort(key=lambda c: int(c["level"]))
+        normalized_filters = [f for f in list(filters or []) if isinstance(f, dict)]
+
+        def _fetch_options(
+            col_name: str, scoped_filters: list[dict[str, Any]]
+        ) -> list[dict[str, Any]]:
+            where_parts = [
+                f"length(trim(toString(ifNull(`{col_name}`, '')))) > 0"
+            ]
+            for filt in scoped_filters:
+                fcol = str(filt.get("column") or "").strip()
+                fval = filt.get("value")
+                if fcol and fcol in available_col_names and fval is not None:
+                    if isinstance(fval, (list, tuple)):
+                        vals = ", ".join(f"'{v}'" for v in fval)
+                        where_parts.append(f"`{fcol}` IN ({vals})")
+                    else:
+                        where_parts.append(f"`{fcol}` = '{fval}'")
+            where_sql = f" WHERE {' AND '.join(where_parts)}"
+            sql = (
+                f"SELECT `{col_name}` AS option_value, count() AS row_count "
+                f"FROM {serving_ref}{where_sql} "
+                f"GROUP BY `{col_name}` ORDER BY `{col_name}`"
+            )
+            try:
+                result = self._qry(sql)
+                return [
+                    {
+                        "label": str(r[0] or ""),
+                        "value": str(r[0] or ""),
+                        "row_count": int(r[1] or 0),
+                    }
+                    for r in result.result_rows
+                    if str(r[0] or "").strip()
+                ]
+            except Exception:  # pylint: disable=broad-except
+                return []
+
+        org_unit_filters = []
+        for col in hierarchy_columns:
+            cname = str(col["column_name"])
+            scoped = [f for f in normalized_filters if str(f.get("column") or "") != cname]
+            org_unit_filters.append({**col, "options": _fetch_options(cname, scoped)})
+
+        if period_filter is not None:
+            pcol = str(period_filter["column_name"])
+            scoped_p = [
+                f for f in normalized_filters if str(f.get("column") or "") != pcol
+            ]
+            period_filter = {**period_filter, "options": _fetch_options(pcol, scoped_p)}
+
+        return {"org_unit_filters": org_unit_filters, "period_filter": period_filter}
+
+    # ------------------------------------------------------------------
+    # Period helper
+    # ------------------------------------------------------------------
+
+    def get_distinct_periods(
+        self,
+        staged_dataset: Any,
+        *,
+        use_serving: bool = True,
+    ) -> list[str]:
+        if use_serving:
+            table_ref = self.get_serving_sql_table_ref(staged_dataset)
+            period_col = "period"
+        else:
+            table_ref = self.get_superset_sql_table_ref(staged_dataset)
+            period_col = "pe"
+        try:
+            result = self._qry(
+                f"SELECT DISTINCT `{period_col}` FROM {table_ref} "
+                f"WHERE isNotNull(`{period_col}`) ORDER BY `{period_col}`"
+            )
+            return [str(r[0]) for r in result.result_rows if r[0]]
+        except Exception:  # pylint: disable=broad-except
+            return []
+
+    # ------------------------------------------------------------------
+    # Export helpers
+    # ------------------------------------------------------------------
+
+    def _build_export_query(
+        self,
+        staged_dataset: Any,
+        selected_columns: list[str] | None,
+        filters: list[dict[str, Any]] | None,
+        limit: int | None,
+    ) -> tuple[str, list[str]]:
+        serving_ref = self.get_serving_sql_table_ref(staged_dataset)
+        all_columns = self.get_serving_table_columns(staged_dataset)
+        if selected_columns:
+            resolved = [c for c in selected_columns if c in all_columns] or all_columns
+        else:
+            resolved = all_columns
+
+        col_sql = ", ".join(f"`{c}`" for c in resolved)
+        where_clauses: list[str] = []
+        for f in list(filters or []):
+            col = str(f.get("column") or "").strip()
+            op = str(f.get("op") or "eq").lower()
+            val = f.get("value")
+            if not col or col not in all_columns:
+                continue
+            if op in ("eq", "equals", "="):
+                where_clauses.append(f"`{col}` = '{val}'")
+            elif op in ("neq", "!=", "<>"):
+                where_clauses.append(f"`{col}` != '{val}'")
+            elif op in ("contains", "like"):
+                where_clauses.append(f"`{col}` ILIKE '%{val}%'")
+            elif op == "gt":
+                where_clauses.append(f"`{col}` > {val}")
+            elif op == "gte":
+                where_clauses.append(f"`{col}` >= {val}")
+            elif op == "lt":
+                where_clauses.append(f"`{col}` < {val}")
+            elif op == "lte":
+                where_clauses.append(f"`{col}` <= {val}")
+            elif op == "in":
+                vals_sql = ", ".join(
+                    f"'{v}'" for v in (val if isinstance(val, list) else [val])
+                )
+                where_clauses.append(f"`{col}` IN ({vals_sql})")
+
+        sql = f"SELECT {col_sql} FROM {serving_ref}"
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        if limit and int(limit) > 0:
+            sql += f" LIMIT {int(limit)}"
+        return sql, resolved
+
+    def export_serving_table_csv(
+        self,
+        staged_dataset: Any,
+        *,
+        selected_columns: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+    ) -> tuple[str, str]:
+        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        if not self.serving_table_exists(staged_dataset):
+            return "", full_name
+        sql, resolved = self._build_export_query(
+            staged_dataset, selected_columns, filters, limit
+        )
+        result = self._qry(sql)
+        rows = [dict(zip(resolved, r)) for r in result.result_rows]
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=resolved)
+        writer.writeheader()
+        writer.writerows(rows)
+        return output.getvalue(), full_name
+
+    def export_serving_table_tsv(
+        self,
+        staged_dataset: Any,
+        *,
+        selected_columns: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+    ) -> tuple[str, str]:
+        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        if not self.serving_table_exists(staged_dataset):
+            return "", full_name
+        sql, resolved = self._build_export_query(
+            staged_dataset, selected_columns, filters, limit
+        )
+        result = self._qry(sql)
+        rows = [dict(zip(resolved, r)) for r in result.result_rows]
+        output = StringIO()
+        writer = csv.DictWriter(output, fieldnames=resolved, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+        return output.getvalue(), full_name
+
+    def export_serving_table_json(
+        self,
+        staged_dataset: Any,
+        *,
+        selected_columns: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        limit: int | None = None,
+    ) -> tuple[str, str]:
+        full_name = self.get_serving_sql_table_ref(staged_dataset)
+        if not self.serving_table_exists(staged_dataset):
+            return _json.dumps([]), full_name
+        sql, resolved = self._build_export_query(
+            staged_dataset, selected_columns, filters, limit
+        )
+        result = self._qry(sql)
+        rows = [dict(zip(resolved, r)) for r in result.result_rows]
+        serialisable = [
+            {
+                k: (v if isinstance(v, (int, float, bool, str, type(None))) else str(v))
+                for k, v in row.items()
+            }
+            for row in rows
+        ]
+        return _json.dumps(serialisable, ensure_ascii=False), full_name
+
+    # ------------------------------------------------------------------
+    # Explorer (admin UI table browser / SQL runner)
+    # ------------------------------------------------------------------
+
+    def list_tables(self) -> list[dict[str, Any]]:
+        """Return all user tables in the staging and serving databases."""
+        databases = list({self._database, self._serving_database})
+        db_list = ", ".join(f"'{d}'" for d in databases)
+        try:
+            result = self._qry(
+                f"SELECT database, name, engine, total_rows "
+                f"FROM system.tables "
+                f"WHERE database IN ({db_list}) "
+                f"ORDER BY database, name"
+            )
+            return [
+                {
+                    "schema": r[0],
+                    "name": r[1],
+                    "type": r[2],
+                    "row_count": int(r[3] or 0),
+                }
+                for r in result.result_rows
+            ]
+        except Exception as exc:  # pylint: disable=broad-except
+            return [{"error": str(exc)}]
+
+    def run_explorer_query(self, sql: str, *, limit: int = 500) -> dict[str, Any]:
+        """Execute a read-only SELECT against ClickHouse and return columns + rows."""
+        sql_stripped = sql.rstrip("; \t\n")
+        upper = sql_stripped.upper()
+        if "LIMIT" not in upper:
+            limited_sql = (
+                f"SELECT * FROM ({sql_stripped}) AS __q LIMIT {int(limit)}"
+            )
+        else:
+            limited_sql = sql_stripped
+        result = self._qry(limited_sql)
+        col_names = list(result.column_names)
+        return {
+            "columns": col_names,
+            "rows": [dict(zip(col_names, r)) for r in result.result_rows],
+            "rowcount": len(result.result_rows),
+        }
 
     # ------------------------------------------------------------------
     # Superset database registration
     # ------------------------------------------------------------------
 
     def get_or_create_superset_database(self) -> Any:
-        """Return or create the Superset ``Database`` record for this ClickHouse."""
+        """Return or create the Superset ``Database`` record for this ClickHouse.
+
+        Uses the ``clickhousedb://`` SQLAlchemy dialect provided by
+        ``clickhouse-connect`` (HTTP port 8123 by default), which is the
+        recommended driver for Superset chart queries.
+        """
+        import json as _j
+
         from superset import db as superset_db  # local import
         from superset.models.core import Database  # local import
 
         host = self._config.get("host", "localhost")
-        port = self._config.get("port", 9000)
-        database = self._database
+        http_port = int(self._config.get("http_port", 8123))
         user = self._config.get("user", "default")
         password = self._config.get("password", "")
-        secure = self._config.get("secure", False)
-        scheme = "clickhouse+native" if not secure else "clickhouse+native"
-        uri = f"{scheme}://{user}:{password}@{host}:{port}/{database}"
+        secure = bool(self._config.get("secure", False))
+        db_name_label = self._config.get(
+            "superset_db_name", "DHIS2 Serving (ClickHouse)"
+        )
 
+        scheme = "clickhousedb+https" if secure else "clickhousedb"
+        # Password is not embedded in the URI — stored in extra connect_args
+        uri = f"{scheme}://{user}@{host}:{http_port}/{self._serving_database}"
+
+        extra_json = _j.dumps({
+            "engine_params": {
+                "connect_args": {"password": password}
+            },
+            # Flag this DB as DHIS2-internal so the dataset wizard can hide it
+            # from Step 1 (users should not pick staging/serving DBs directly).
+            "dhis2_staging_internal": True,
+        })
+
+        # Look up by URI first; fall back to name in case URI changed
+        # (e.g. user/password updated — URI user component differs).
         existing = (
             superset_db.session.query(Database)
             .filter(Database.sqlalchemy_uri == uri)
             .first()
         )
+        if existing is None:
+            existing = (
+                superset_db.session.query(Database)
+                .filter(Database.database_name == db_name_label)
+                .first()
+            )
+            if existing is not None:
+                # URI changed (credentials update) — patch it in place
+                existing.sqlalchemy_uri = uri
+                logger.info(
+                    "ClickHouse: updated Superset Database URI for %r", db_name_label
+                )
+
         if existing:
+            # Patch connect_args / extra if password changed
+            try:
+                current_extra = _j.loads(existing.extra or "{}")
+            except Exception:  # pylint: disable=broad-except
+                current_extra = {}
+            current_extra.setdefault("engine_params", {}).setdefault(
+                "connect_args", {}
+            )["password"] = password
+            existing.extra = _j.dumps(current_extra)
+            superset_db.session.commit()
             return existing
 
         new_db = Database(
-            database_name="DHIS2 Staging (ClickHouse)",
+            database_name=db_name_label,
             sqlalchemy_uri=uri,
+            extra=extra_json,
             expose_in_sqllab=True,
             allow_run_async=True,
             allow_ctas=False,

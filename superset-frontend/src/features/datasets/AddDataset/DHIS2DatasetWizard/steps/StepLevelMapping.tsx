@@ -1,38 +1,43 @@
 /**
- * StepLevelMapping — wizard step for configuring org-unit hierarchy level
- * mappings across multiple DHIS2 instances.
+ * StepLevelMapping — repository org-unit level mapping table, embedded inside
+ * the Organisation Units tab when source mode is "repository".
  *
- * When enabled, the user defines how raw hierarchy levels from each DHIS2
- * instance map to a set of "merged" levels in the serving dataset.  Only
- * mapped levels are included in the final column list; levels whose
- * instance_levels entry is null/empty for a given instance are simply
- * omitted for that instance during query building.
+ * Always shown (no toggle). Auto-initialises with 8 Uganda hierarchy levels.
+ * Each instance column shows only that instance's actual OU levels.
  */
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { styled, t } from '@superset-ui/core';
 import {
   Button,
   Select,
-  Switch,
   Typography,
   Input,
   Space,
-  Alert,
 } from '@superset-ui/core/components';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 
 import type { DHIS2WizardState, LevelMappingConfig, LevelMappingRow } from '../index';
 
-const { Title, Paragraph, Text } = Typography;
+const { Text } = Typography;
+
+// ── Interfaces ────────────────────────────────────────────────────────────────
+
+export interface OrgUnitLevel {
+  level: number;
+  displayName: string;
+  name?: string;
+  sourceInstanceIds?: number[];
+  /** Per-instance level name: instanceId → that instance's own name for this level */
+  instanceLevelNames?: Record<number, string>;
+}
 
 // ── Styled shells ─────────────────────────────────────────────────────────────
 
-const StepContainer = styled.div`
+const SectionContainer = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  max-width: 1100px;
+  gap: 12px;
 `;
 
 const TableCard = styled.div`
@@ -72,19 +77,19 @@ const TableRow = styled.div<{ $isOdd: boolean }>`
 `;
 
 const LevelNumCell = styled.div`
-  width: 48px;
+  width: 36px;
   flex-shrink: 0;
   text-align: center;
 `;
 
 const LabelCell = styled.div`
-  width: 160px;
+  width: 200px;
   flex-shrink: 0;
 `;
 
 const InstanceCell = styled.div`
   flex: 1;
-  min-width: 120px;
+  min-width: 140px;
 `;
 
 const DeleteCell = styled.div`
@@ -92,23 +97,29 @@ const DeleteCell = styled.div`
   flex-shrink: 0;
 `;
 
-const EmptyState = styled.div`
-  ${({ theme }) => `
-    text-align: center;
-    padding: ${theme.sizeUnit * 8}px;
-    color: ${theme.colorTextTertiary};
-  `}
-`;
-
-const ToggleRow = styled.div`
+const DefaultInstanceRow = styled.div`
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 `;
 
-// ── Level options (1-10 + none) ───────────────────────────────────────────────
+// ── Pre-defined Uganda repository levels ────────────────────────────────────
 
-function makeLevelOptions() {
+const REPOSITORY_LEVEL_DEFAULTS: { level: number; label: string }[] = [
+  { level: 1, label: 'National' },
+  { level: 2, label: 'Region' },
+  { level: 3, label: 'District/City' },
+  { level: 4, label: 'DLG/Municipality/City Council' },
+  { level: 5, label: 'Sub County/Town Council/Division' },
+  { level: 6, label: 'Health Facility' },
+  { level: 7, label: 'Ward/Department' },
+  { level: 8, label: 'Schools' },
+];
+
+// ── Level option helpers ─────────────────────────────────────────────────────
+
+function makeGenericLevelOptions() {
   return [
     { value: '', label: t('— none —') },
     ...Array.from({ length: 10 }, (_, i) => ({
@@ -118,23 +129,65 @@ function makeLevelOptions() {
   ];
 }
 
-const LEVEL_OPTIONS = makeLevelOptions();
+function getInstanceLevels(
+  orgUnitLevels: OrgUnitLevel[],
+  instanceId: number,
+): OrgUnitLevel[] {
+  if (orgUnitLevels.length === 0) return [];
+  const hasPerInstanceTracking = orgUnitLevels.some(
+    l => l.sourceInstanceIds && l.sourceInstanceIds.length > 0,
+  );
+  if (!hasPerInstanceTracking) return orgUnitLevels;
+  return orgUnitLevels.filter(
+    l =>
+      !l.sourceInstanceIds ||
+      l.sourceInstanceIds.length === 0 ||
+      l.sourceInstanceIds.includes(instanceId),
+  );
+}
+
+function makeInstanceLevelOptions(
+  orgUnitLevels: OrgUnitLevel[],
+  instanceId: number,
+): { value: string; label: string }[] {
+  const relevant = getInstanceLevels(orgUnitLevels, instanceId);
+  if (relevant.length === 0) {
+    return makeGenericLevelOptions();
+  }
+  return [
+    { value: '', label: t('— none —') },
+    ...relevant.map(l => {
+      const name =
+        (l.instanceLevelNames && l.instanceLevelNames[instanceId]) ||
+        l.displayName;
+      return {
+        value: String(l.level),
+        label: `${l.level}. ${name}`,
+      };
+    }),
+  ];
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export interface StepLevelMappingProps {
   wizardState: DHIS2WizardState;
   updateState: (updates: Partial<DHIS2WizardState>) => void;
+  orgUnitLevels?: OrgUnitLevel[];
+  instances?: { id: number; name: string }[];
 }
 
 export default function StepLevelMapping({
   wizardState,
   updateState,
+  orgUnitLevels = [],
+  instances: instancesProp,
 }: StepLevelMappingProps) {
   const { levelMapping, selectedInstanceIds, variableMappings } = wizardState;
+  const [defaultInstanceId, setDefaultInstanceId] = useState<number | null>(null);
 
-  // Build (id → name) map for display
   const instances = useMemo(() => {
+    if (instancesProp && instancesProp.length > 0) return instancesProp;
     const seen = new Map<number, string>();
     for (const m of variableMappings) {
       if (m.instanceId && !seen.has(m.instanceId)) {
@@ -145,9 +198,8 @@ export default function StepLevelMapping({
       if (!seen.has(id)) seen.set(id, `Instance ${id}`);
     }
     return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
-  }, [variableMappings, selectedInstanceIds]);
+  }, [instancesProp, variableMappings, selectedInstanceIds]);
 
-  const enabled = levelMapping?.enabled ?? false;
   const rows: LevelMappingRow[] = levelMapping?.rows ?? [];
 
   const setMapping = useCallback(
@@ -155,29 +207,46 @@ export default function StepLevelMapping({
     [updateState],
   );
 
-  const handleToggle = useCallback(
-    (checked: boolean) => {
-      if (checked && rows.length === 0) {
-        // Auto-generate 3 default rows
-        const defaultRows: LevelMappingRow[] = [1, 2, 3].map(n => ({
-          merged_level: n,
-          label: t('Level %s', n),
-          instance_levels: Object.fromEntries(
-            instances.map(({ id }) => [String(id), n]),
-          ),
-        }));
-        setMapping({ enabled: true, rows: defaultRows });
-      } else {
-        setMapping({ enabled: checked, rows });
-      }
-    },
-    [rows, instances, setMapping],
+  // Build per-instance available level sets for smart auto-population
+  const instanceAvailableLevels = useMemo(() => {
+    const map = new Map<number, Set<number>>();
+    for (const inst of instances) {
+      const levels = getInstanceLevels(orgUnitLevels, inst.id);
+      map.set(inst.id, new Set(levels.map(l => l.level)));
+    }
+    return map;
+  }, [instances, orgUnitLevels]);
+
+  const buildDefaultRows = useCallback(
+    (): LevelMappingRow[] =>
+      REPOSITORY_LEVEL_DEFAULTS.map(({ level, label }) => ({
+        merged_level: level,
+        label,
+        instance_levels: Object.fromEntries(
+          instances.map(({ id }) => {
+            const available = instanceAvailableLevels.get(id);
+            const value =
+              !available || available.size === 0 || available.has(level)
+                ? level
+                : null;
+            return [String(id), value];
+          }),
+        ),
+      })),
+    [instances, instanceAvailableLevels],
   );
 
+  // Auto-initialise with 8 default rows whenever instances become available
+  // and no rows have been configured yet.
+  useEffect(() => {
+    if (instances.length > 0 && rows.length === 0) {
+      setMapping({ enabled: true, rows: buildDefaultRows() });
+    }
+  }, [instances.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleAddRow = useCallback(() => {
-    const nextLevel = rows.length > 0
-      ? Math.max(...rows.map(r => r.merged_level)) + 1
-      : 1;
+    const nextLevel =
+      rows.length > 0 ? Math.max(...rows.map(r => r.merged_level)) + 1 : 1;
     const newRow: LevelMappingRow = {
       merged_level: nextLevel,
       label: t('Level %s', nextLevel),
@@ -190,160 +259,160 @@ export default function StepLevelMapping({
 
   const handleRemoveRow = useCallback(
     (idx: number) => {
-      const next = rows.filter((_, i) => i !== idx);
-      setMapping({ enabled: true, rows: next });
+      setMapping({ enabled: true, rows: rows.filter((_, i) => i !== idx) });
     },
     [rows, setMapping],
   );
 
   const handleLabelChange = useCallback(
     (idx: number, label: string) => {
-      const next = rows.map((r, i) => (i === idx ? { ...r, label } : r));
-      setMapping({ enabled: true, rows: next });
+      setMapping({
+        enabled: true,
+        rows: rows.map((r, i) => (i === idx ? { ...r, label } : r)),
+      });
     },
     [rows, setMapping],
   );
 
   const handleInstanceLevelChange = useCallback(
     (rowIdx: number, instanceId: number, rawLevel: string) => {
-      const next = rows.map((r, i) => {
-        if (i !== rowIdx) return r;
-        return {
-          ...r,
-          instance_levels: {
-            ...r.instance_levels,
-            [String(instanceId)]: rawLevel === '' ? null : Number(rawLevel),
-          },
-        };
+      setMapping({
+        enabled: true,
+        rows: rows.map((r, i) => {
+          if (i !== rowIdx) return r;
+          return {
+            ...r,
+            instance_levels: {
+              ...r.instance_levels,
+              [String(instanceId)]: rawLevel === '' ? null : Number(rawLevel),
+            },
+          };
+        }),
       });
-      setMapping({ enabled: true, rows: next });
     },
     [rows, setMapping],
   );
 
+  const handleApplyDefaultInstance = useCallback(
+    (instanceId: number | null) => {
+      setDefaultInstanceId(instanceId);
+      if (instanceId === null || orgUnitLevels.length === 0) return;
+      const levelNameMap = new Map<number, string>();
+      getInstanceLevels(orgUnitLevels, instanceId).forEach(l =>
+        levelNameMap.set(
+          l.level,
+          (l.instanceLevelNames && l.instanceLevelNames[instanceId]) ||
+            l.displayName,
+        ),
+      );
+      if (levelNameMap.size === 0) return;
+      setMapping({
+        enabled: true,
+        rows: rows.map(r => ({
+          ...r,
+          label: levelNameMap.get(r.merged_level) ?? r.label,
+        })),
+      });
+    },
+    [orgUnitLevels, rows, setMapping],
+  );
+
+  const instanceOptions = useMemo(
+    () => instances.map(inst => ({ value: inst.id, label: inst.name })),
+    [instances],
+  );
+
   return (
-    <StepContainer>
-      <div>
-        <Title level={4}>{t('Org Unit Hierarchy Level Mapping')}</Title>
-        <Paragraph style={{ marginBottom: 8 }}>
-          {t(
-            'By default, hierarchy levels are merged automatically across instances ' +
-              '(the highest level present in any instance is used). ' +
-              'Enable custom mapping to explicitly match levels across instances ' +
-              'and to rename merged level columns.',
-          )}
-        </Paragraph>
-        {instances.length < 2 && (
-          <Alert
-            type="info"
-            style={{ marginBottom: 16 }}
-            message={t(
-              'Level mapping is most useful when multiple DHIS2 instances with ' +
-                'different hierarchy depths are combined. You have only one instance ' +
-                'selected — auto-merge is sufficient in most cases.',
-            )}
-            showIcon
+    <SectionContainer>
+      {instances.length > 1 && (
+        <DefaultInstanceRow>
+          <Text style={{ flexShrink: 0 }}>{t('Populate labels from:')}</Text>
+          <Select
+            allowClear
+            placeholder={t('Select default instance')}
+            value={defaultInstanceId ?? undefined}
+            options={instanceOptions}
+            onChange={(val: unknown) =>
+              handleApplyDefaultInstance(val == null ? null : Number(val))
+            }
+            styles={{ root: { minWidth: 220 } }}
           />
-        )}
-      </div>
-
-      <ToggleRow>
-        <Switch checked={enabled} onChange={handleToggle} />
-        <Text strong>{t('Enable custom level mapping')}</Text>
-        {enabled && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {t(
-              'Only levels defined in this table will appear as hierarchy columns.',
-            )}
+            {t('Auto-fills repository level labels from that instance\'s actual OU level names.')}
           </Text>
-        )}
-      </ToggleRow>
-
-      {enabled && (
-        <TableCard>
-          {/* Header */}
-          <TableHeader>
-            <LevelNumCell>{t('#')}</LevelNumCell>
-            <LabelCell>{t('Column Label')}</LabelCell>
-            {instances.map(inst => (
-              <InstanceCell key={inst.id}>
-                <span title={inst.name}>
-                  {inst.name.length > 18
-                    ? `${inst.name.slice(0, 16)}…`
-                    : inst.name}
-                </span>
-                <div style={{ fontWeight: 400, opacity: 0.6, fontSize: 10 }}>
-                  {t('raw level')}
-                </div>
-              </InstanceCell>
-            ))}
-            <DeleteCell />
-          </TableHeader>
-
-          {/* Rows */}
-          {rows.length === 0 ? (
-            <EmptyState>
-              {t('No levels defined — click "Add Level" to start.')}
-            </EmptyState>
-          ) : (
-            rows.map((row, idx) => (
-              <TableRow key={row.merged_level} $isOdd={idx % 2 === 1}>
-                <LevelNumCell>
-                  <Text strong>{row.merged_level}</Text>
-                </LevelNumCell>
-
-                <LabelCell>
-                  <Input
-                    size="small"
-                    value={row.label}
-                    onChange={e => handleLabelChange(idx, e.target.value)}
-                    placeholder={t('Label')}
-                  />
-                </LabelCell>
-
-                {instances.map(inst => {
-                  const raw = row.instance_levels[String(inst.id)];
-                  return (
-                    <InstanceCell key={inst.id}>
-                      <Select
-                        css={{ width: '100%' }}
-                        value={raw == null ? '' : String(raw)}
-                        options={LEVEL_OPTIONS}
-                        onChange={(val: unknown) =>
-                          handleInstanceLevelChange(idx, inst.id, String(val ?? ''))
-                        }
-                      />
-                    </InstanceCell>
-                  );
-                })}
-
-                <DeleteCell>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<DeleteOutlined />}
-                    onClick={() => handleRemoveRow(idx)}
-                    danger
-                  />
-                </DeleteCell>
-              </TableRow>
-            ))
-          )}
-        </TableCard>
+        </DefaultInstanceRow>
       )}
 
-      {enabled && (
-        <Space>
-          <Button icon={<PlusOutlined />} onClick={handleAddRow}>
-            {t('Add Level')}
-          </Button>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {t(
-              'Set a raw level to "— none —" to exclude that instance from a merged level.',
-            )}
-          </Text>
-        </Space>
-      )}
-    </StepContainer>
+      <TableCard>
+        <TableHeader>
+          <LevelNumCell>{t('#')}</LevelNumCell>
+          <LabelCell>{t('Repo Level')}</LabelCell>
+          {instances.map(inst => (
+            <InstanceCell key={inst.id}>
+              <span title={inst.name}>
+                {inst.name.length > 22 ? `${inst.name.slice(0, 20)}…` : inst.name}
+              </span>
+              <div style={{ fontWeight: 400, opacity: 0.6, fontSize: 10 }}>
+                {t('select level')}
+              </div>
+            </InstanceCell>
+          ))}
+          <DeleteCell />
+        </TableHeader>
+
+        {rows.map((row, idx) => (
+          <TableRow key={row.merged_level} $isOdd={idx % 2 === 1}>
+            <LevelNumCell>
+              <Text strong>{row.merged_level}</Text>
+            </LevelNumCell>
+
+            <LabelCell>
+              <Input
+                size="small"
+                value={row.label}
+                onChange={e => handleLabelChange(idx, e.target.value)}
+                placeholder={t('Label')}
+              />
+            </LabelCell>
+
+            {instances.map(inst => {
+              const raw = row.instance_levels[String(inst.id)];
+              const options = makeInstanceLevelOptions(orgUnitLevels, inst.id);
+              return (
+                <InstanceCell key={inst.id}>
+                  <Select
+                    css={{ width: '100%' }}
+                    value={raw == null ? '' : String(raw)}
+                    options={options}
+                    onChange={(val: unknown) =>
+                      handleInstanceLevelChange(idx, inst.id, String(val ?? ''))
+                    }
+                  />
+                </InstanceCell>
+              );
+            })}
+
+            <DeleteCell>
+              <Button
+                type="text"
+                size="small"
+                icon={<DeleteOutlined />}
+                onClick={() => handleRemoveRow(idx)}
+                danger
+              />
+            </DeleteCell>
+          </TableRow>
+        ))}
+      </TableCard>
+
+      <Space>
+        <Button icon={<PlusOutlined />} onClick={handleAddRow}>
+          {t('Add Level')}
+        </Button>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {t('Set "— none —" to exclude an instance from a repository level.')}
+        </Text>
+      </Space>
+    </SectionContainer>
   );
 }

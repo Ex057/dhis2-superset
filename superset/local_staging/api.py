@@ -64,7 +64,8 @@ class DuckDBConfigSchema(Schema):
 
 class ClickHouseConfigSchema(Schema):
     host = fields.Str(required=True)
-    port = fields.Int(load_default=9000)
+    http_port = fields.Int(load_default=8123)  # HTTP port used by clickhouse-connect
+    port = fields.Int(load_default=9000)        # native TCP port (kept for reference)
     database = fields.Str(load_default="dhis2_staging")
     user = fields.Str(load_default="default")
     password = fields.Str(load_default="")
